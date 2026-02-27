@@ -64,6 +64,8 @@ search_sentinel2 <- function(aoi, start_date, end_date, max_cloud = 30) {
 
   datetime_str <- paste0(start_date, "T00:00:00Z/", end_date, "T23:59:59Z")
 
+  # Planetary Computer ne supporte pas ext_query ; on utilise get_request()
+  # puis on filtre côté client par eo:cloud_cover
   items <- tryCatch({
     rstac::stac(STAC_CONFIG$stac_url) |>
       rstac::stac_search(
@@ -72,8 +74,7 @@ search_sentinel2 <- function(aoi, start_date, end_date, max_cloud = 30) {
         datetime    = datetime_str,
         limit       = STAC_CONFIG$max_results
       ) |>
-      rstac::ext_query(`eo:cloud_cover` = list(`lte` = max_cloud)) |>
-      rstac::post_request()
+      rstac::get_request()
   }, error = function(e) {
     cli::cli_alert_danger("Erreur STAC S2 : {e$message}")
     return(NULL)
@@ -81,6 +82,17 @@ search_sentinel2 <- function(aoi, start_date, end_date, max_cloud = 30) {
 
   if (is.null(items) || length(items$features) == 0) {
     log_msg("  Aucune scène S2 trouvée", level = "warning")
+    return(NULL)
+  }
+
+  # Filtrage côté client : garder uniquement les scènes ≤ max_cloud
+  items$features <- Filter(function(feat) {
+    cc <- feat$properties$`eo:cloud_cover`
+    !is.null(cc) && cc <= max_cloud
+  }, items$features)
+
+  if (length(items$features) == 0) {
+    log_msg("  Aucune scène S2 ≤ {max_cloud}% de nuages", level = "warning")
     return(NULL)
   }
 
@@ -131,22 +143,16 @@ search_sentinel1 <- function(aoi, start_date, end_date, orbit_direction = NULL) 
 
   datetime_str <- paste0(start_date, "T00:00:00Z/", end_date, "T23:59:59Z")
 
-  q <- rstac::stac(STAC_CONFIG$stac_url) |>
-    rstac::stac_search(
-      collections = STAC_CONFIG$s1_collection,
-      bbox        = bbox,
-      datetime    = datetime_str,
-      limit       = STAC_CONFIG$max_results
-    )
-
-  if (!is.null(orbit_direction)) {
-    q <- q |> rstac::ext_query(
-      `sat:orbit_state` = list(`eq` = tolower(orbit_direction))
-    )
-  }
-
+  # Planetary Computer : get_request() + filtrage côté client
   items <- tryCatch({
-    q |> rstac::post_request()
+    rstac::stac(STAC_CONFIG$stac_url) |>
+      rstac::stac_search(
+        collections = STAC_CONFIG$s1_collection,
+        bbox        = bbox,
+        datetime    = datetime_str,
+        limit       = STAC_CONFIG$max_results
+      ) |>
+      rstac::get_request()
   }, error = function(e) {
     cli::cli_alert_danger("Erreur STAC S1 : {e$message}")
     return(NULL)
@@ -155,6 +161,20 @@ search_sentinel1 <- function(aoi, start_date, end_date, orbit_direction = NULL) 
   if (is.null(items) || length(items$features) == 0) {
     log_msg("  Aucun produit S1 trouvé", level = "warning")
     return(NULL)
+  }
+
+  # Filtrage côté client : direction d'orbite si spécifiée
+  if (!is.null(orbit_direction)) {
+    target <- tolower(orbit_direction)
+    items$features <- Filter(function(feat) {
+      orb <- feat$properties$`sat:orbit_state`
+      !is.null(orb) && tolower(orb) == target
+    }, items$features)
+
+    if (length(items$features) == 0) {
+      log_msg("  Aucun produit S1 en orbite {orbit_direction}", level = "warning")
+      return(NULL)
+    }
   }
 
   items_signed <- rstac::items_sign(items, sign_fn = rstac::sign_planetary_computer())
