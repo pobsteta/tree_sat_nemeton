@@ -1,61 +1,18 @@
-#!/usr/bin/env Rscript
 # ==============================================================================
 # TreeSatAI-Time-Series (IGNF) — Configuration
 # Classification d'essences forestières par séries temporelles Sentinel-2
 # 20 espèces européennes identifiées par signature phénologique
 # ==============================================================================
 
-# --- Packages requis ---------------------------------------------------------
-required_packages <- c(
-
-  # Données spatiales
-  "sf", "terra", "stars",
-
-  # Séries temporelles
-  "zoo", "xts", "signal", "pracma",
-
-  # Sentinel-2 / télédétection
-  "sen2r",
-
-  # Machine Learning
-
-"randomForest", "ranger", "caret", "e1071",
-
-  # Deep Learning (optionnel)
-  "torch", "luz",
-
-  # Visualisation
-  "ggplot2", "patchwork", "viridis", "RColorBrewer", "scales",
-  "pheatmap",
-
-  # Manipulation de données
-  "dplyr", "tidyr", "purrr", "readr", "stringr", "lubridate",
-  "data.table",
-
-  # Évaluation
-  "yardstick", "MLmetrics",
-
-  # Parallélisme
-  "future", "future.apply", "furrr",
-
-  # STAC / téléchargement satellite
-  "rstac", "httr2",
-
-  # Utilitaires
-  "here", "glue", "cli", "jsonlite", "yaml"
-)
-
-install_if_missing <- function(pkgs) {
-  missing <- pkgs[!sapply(pkgs, requireNamespace, quietly = TRUE)]
-  if (length(missing) > 0) {
-    cli::cli_alert_info("Installation de {length(missing)} package(s) manquant(s)...")
-    install.packages(missing, repos = "https://cran.r-project.org")
-  }
-  invisible(NULL)
+# --- Chemins du projet -------------------------------------------------------
+# En mode package, les chemins sont relatifs au working directory
+# L'utilisateur peut les changer via options(treesatnemeton.data_dir = "...")
+.get_project_root <- function() {
+  getOption("treesatnemeton.project_root",
+            default = if (requireNamespace("here", quietly = TRUE)) here::here() else getwd())
 }
 
-# --- Chemins du projet -------------------------------------------------------
-PROJECT_ROOT  <- here::here()
+PROJECT_ROOT  <- .get_project_root()
 DATA_DIR      <- file.path(PROJECT_ROOT, "data")
 RAW_DIR       <- file.path(DATA_DIR, "raw")
 PROCESSED_DIR <- file.path(DATA_DIR, "processed")
@@ -64,8 +21,22 @@ OUTPUT_DIR    <- file.path(PROJECT_ROOT, "output")
 FIGURES_DIR   <- file.path(PROJECT_ROOT, "figures")
 MODELS_DIR    <- file.path(OUTPUT_DIR, "models")
 
-dirs <- c(DATA_DIR, RAW_DIR, PROCESSED_DIR, TS_DIR, OUTPUT_DIR, FIGURES_DIR, MODELS_DIR)
-for (d in dirs) dir.create(d, showWarnings = FALSE, recursive = TRUE)
+#' Initialise les répertoires du projet
+#' @param root Répertoire racine (par défaut : working directory)
+#' @export
+init_project_dirs <- function(root = .get_project_root()) {
+  dirs <- c(
+    file.path(root, "data"),
+    file.path(root, "data", "raw"),
+    file.path(root, "data", "processed"),
+    file.path(root, "data", "timeseries"),
+    file.path(root, "output"),
+    file.path(root, "output", "models"),
+    file.path(root, "figures")
+  )
+  for (d in dirs) dir.create(d, showWarnings = FALSE, recursive = TRUE)
+  invisible(dirs)
+}
 
 # --- Paramètres Sentinel-2 ---------------------------------------------------
 S2_BANDS <- list(
@@ -194,12 +165,4 @@ VIS_PARAMS <- list(
   font_size  = 10
 )
 
-# --- Message de bienvenue ----------------------------------------------------
-cli::cli_h1("TreeSatAI-Time-Series (IGNF)")
-cli::cli_text("Classification d'essences forestières par séries temporelles Sentinel-2")
-cli::cli_text("{.strong 20 espèces européennes} — Signatures phénologiques annuelles")
-cli::cli_text("")
-cli::cli_alert_info("Année de référence : {TS_PARAMS$year}")
-cli::cli_alert_info("Résolution temporelle cible : {TS_PARAMS$target_interval_days} jours ({TS_PARAMS$n_dates_target} dates)")
-cli::cli_alert_info("Espèces feuillues : {sum(SPECIES$type == 'feuillu')}")
-cli::cli_alert_info("Espèces résineuses : {sum(SPECIES$type == 'résineux')}")
+# --- Message de bienvenue (affiché via .onAttach dans zzz.R) ----------------

@@ -12,8 +12,7 @@
 # l'AOI est téléchargée via /vsicurl/, ce qui est très efficace.
 # ==============================================================================
 
-source(file.path(here::here(), "R", "00_config.R"))
-source(file.path(here::here(), "R", "01_utils.R"))
+# Configuration et utilitaires chargés via le package
 
 # ==============================================================================
 # CONFIGURATION — MICROSOFT PLANETARY COMPUTER
@@ -680,8 +679,3 @@ calc_s1_temporal_features <- function(vv_ts, vh_ts) {
 
 `%||%` <- function(x, y) if (is.null(x)) y else x
 
-cli::cli_alert_success("Module satellite chargé (Planetary Computer — sans authentification)")
-cli::cli_text("Utilisation :")
-cli::cli_text('  {.code download_satellite_data("aoi.gpkg", year = 2023)}')
-cli::cli_text('  {.code download_s2_for_aoi(aoi, year = 2023)}')
-cli::cli_text('  {.code download_s1_for_aoi(aoi, year = 2023)}')

@@ -1,0 +1,63 @@
+# Generated manually — switch to roxygen2 later with devtools::document()
+
+# --- Main user-facing functions ---
+export(predict_species_map)
+export(download_satellite_data)
+export(download_s2_for_aoi)
+export(download_s1_for_aoi)
+export(download_treesatai_hf)
+export(train_treesatai)
+
+# --- Data acquisition ---
+export(download_treesatai_ts)
+export(load_ifn_plots)
+export(extract_s2_timeseries)
+export(generate_synthetic_dataset)
+export(build_feature_matrix)
+export(search_sentinel2)
+export(search_sentinel1)
+
+# --- Classification ---
+export(split_train_test)
+export(select_features)
+export(train_random_forest)
+export(predict_rf)
+export(cross_validate)
+export(evaluate_classification)
+export(save_model)
+export(load_model)
+
+# --- Phenology ---
+export(extract_phenometrics)
+export(classify_phenotype)
+export(fourier_features)
+
+# --- Utilities ---
+export(calc_ndvi)
+export(calc_evi)
+export(calc_all_indices)
+export(calc_temporal_stats)
+export(interpolate_ts)
+export(smooth_savgol)
+export(log_msg)
+
+# --- Visualization ---
+export(plot_phenological_profiles)
+export(plot_confusion_matrix)
+export(plot_variable_importance)
+export(plot_species_metrics)
+export(plot_dashboard)
+
+# --- HuggingFace dataset ---
+export(load_treesatai_labels)
+export(load_treesatai_split)
+export(init_project_dirs)
+
+# --- Python bridge ---
+export(setup_python_env)
+export(check_python_ready)
+
+# --- Imports ---
+importFrom(stats, predict, setNames, median, runif, rnorm, sd, quantile, fft)
+importFrom(utils, download.file, install.packages, unzip)
+importFrom(grDevices, colorRampPalette)

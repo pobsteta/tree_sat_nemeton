@@ -4,9 +4,7 @@
 # Random Forest + CNN temporel optionnel
 # ==============================================================================
 
-source(file.path(here::here(), "R", "00_config.R"))
-source(file.path(here::here(), "R", "01_utils.R"))
-source(file.path(here::here(), "R", "02_phenology.R"))
+# Configuration, utilitaires et phénologie chargés via le package
 
 # ==============================================================================
 # 1. PRÉPARATION DES DONNÉES POUR LA CLASSIFICATION
@@ -648,4 +646,3 @@ load_model <- function(model_path) {
   model
 }
 
-cli::cli_alert_success("Module de classification chargé")

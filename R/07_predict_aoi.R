@@ -14,12 +14,7 @@
 #   Rscript R/07_predict_aoi.R --aoi mon_aoi.gpkg --year 2023
 # ==============================================================================
 
-source(file.path(here::here(), "R", "00_config.R"))
-source(file.path(here::here(), "R", "01_utils.R"))
-source(file.path(here::here(), "R", "02_phenology.R"))
-source(file.path(here::here(), "R", "05_classification.R"))
-source(file.path(here::here(), "R", "08_download_satellite.R"))
-source(file.path(here::here(), "R", "09_python_bridge.R"))
+# Tous les modules chargés via le package
 
 # ==============================================================================
 # 1. TÉLÉCHARGEMENT DES SÉRIES TEMPORELLES SENTINEL-2 SUR L'AOI
@@ -888,69 +883,7 @@ print_species_summary <- function(stats) {
 
 # ==============================================================================
 # 5. EXÉCUTION EN LIGNE DE COMMANDE
+# Déplacé dans inst/scripts/07_predict_cli.R pour compatibilité package
+# Usage CLI : Rscript inst/scripts/07_predict_cli.R --aoi aoi.gpkg
 # ==============================================================================
 
-if (!interactive()) {
-  args <- commandArgs(trailingOnly = TRUE)
-
-  aoi_file      <- NULL
-  s2_dir_arg    <- NULL
-  s1_dir_arg    <- NULL
-  model_arg     <- NULL
-  year_arg      <- 2021
-  res_arg       <- 10
-  out_arg       <- OUTPUT_DIR
-  auto_dl       <- FALSE
-  use_s1_arg    <- FALSE
-  use_pt_arg    <- FALSE
-  arch_arg      <- "tempcnn"
-
-  for (i in seq_along(args)) {
-    if (args[i] == "--aoi" && i < length(args))    aoi_file   <- args[i + 1]
-    if (args[i] == "--s2" && i < length(args))     s2_dir_arg <- args[i + 1]
-    if (args[i] == "--s1" && i < length(args))     s1_dir_arg <- args[i + 1]
-    if (args[i] == "--model" && i < length(args))  model_arg  <- args[i + 1]
-    if (args[i] == "--year" && i < length(args))   year_arg   <- as.integer(args[i + 1])
-    if (args[i] == "--res" && i < length(args))    res_arg    <- as.integer(args[i + 1])
-    if (args[i] == "--output" && i < length(args)) out_arg    <- args[i + 1]
-    if (args[i] == "--download")                    auto_dl    <- TRUE
-    if (args[i] == "--use-s1")                      use_s1_arg <- TRUE
-    if (args[i] == "--pytorch")                     use_pt_arg <- TRUE
-    if (args[i] == "--arch" && i < length(args))   arch_arg   <- args[i + 1]
-  }
-
-  if (is.null(aoi_file)) {
-    cat("Usage : Rscript R/07_predict_aoi.R --aoi aoi.gpkg [options]\n\n")
-    cat("Options :\n")
-    cat("  --aoi <fichier>     Fichier GeoPackage/Shapefile de la zone d'intérêt\n")
-    cat("  --s2 <dossier>      Répertoire des images Sentinel-2 L2A\n")
-    cat("  --s1 <dossier>      Répertoire des images Sentinel-1 GRD\n")
-    cat("  --model <fichier>   Modèle pré-entraîné (.rds ou .pt)\n")
-    cat("  --year <année>      Année d'analyse (défaut: 2021)\n")
-    cat("  --res <mètres>      Résolution cible (défaut: 10)\n")
-    cat("  --output <dossier>  Répertoire de sortie\n")
-    cat("  --download          Télécharger automatiquement S2 (+S1) depuis CDSE\n")
-    cat("  --use-s1            Inclure les features Sentinel-1 (radar)\n")
-    cat("  --pytorch           Utiliser un modèle PyTorch (.pt) au lieu de ranger\n")
-    cat("  --arch <modèle>     Architecture PyTorch : tempcnn, lstm, transformer, inception\n")
-    quit(status = 1)
-  }
-
-  predict_species_map(
-    aoi_path      = aoi_file,
-    s2_dir        = s2_dir_arg,
-    s1_dir        = s1_dir_arg,
-    model_path    = model_arg,
-    year          = year_arg,
-    output_dir    = out_arg,
-    resolution    = res_arg,
-    auto_download = auto_dl,
-    use_s1        = use_s1_arg,
-    use_pytorch   = use_pt_arg,
-    pytorch_model = arch_arg
-  )
-}
-
-cli::cli_alert_success("Module de prédiction AOI chargé")
-cli::cli_text("Utilisez : {.code result <- predict_species_map('aoi.gpkg')}")
-cli::cli_text("Avec PyTorch : {.code result <- predict_species_map('aoi.gpkg', use_pytorch = TRUE)}")

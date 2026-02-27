@@ -1,0 +1,11 @@
+^\.git$
+^\.gitignore$
+^data$
+^output$
+^figures$
+^python$
+^environment\.yml$
+^.*\.Rproj$
+^\.Rproj\.user$
+^README\.md$
+^LICENSE$

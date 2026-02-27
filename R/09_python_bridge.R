@@ -12,7 +12,7 @@
 #   preds <- py_predict_pixels(model, pixel_array)
 # ==============================================================================
 
-source(file.path(here::here(), "R", "00_config.R"))
+# Configuration chargée via le package
 
 # ==============================================================================
 # 1. CONFIGURATION DE L'ENVIRONNEMENT PYTHON
@@ -537,5 +537,3 @@ check_python_ready <- function() {
 }
 
 
-cli::cli_alert_success("Module Python bridge chargé (reticulate)")
-cli::cli_text("Utilisez : {.code setup_python_env()} pour initialiser l'env conda")

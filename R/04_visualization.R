@@ -4,10 +4,8 @@
 # Profils phénologiques, cartes de confusion, importance des variables
 # ==============================================================================
 
-source(file.path(here::here(), "R", "00_config.R"))
-
-library(ggplot2)
-library(patchwork)
+# Configuration chargée via le package
+# ggplot2 et patchwork sont des dépendances du package (Imports)
 
 # --- Profils phénologiques par espèce ----------------------------------------
 
@@ -426,4 +424,3 @@ plot_dashboard <- function(plots, save_path = NULL) {
   dashboard
 }
 
-cli::cli_alert_success("Module de visualisation chargé")

@@ -4,7 +4,7 @@
 # Signatures phénologiques annuelles pour 20 espèces européennes
 # ==============================================================================
 
-source(file.path(here::here(), "R", "01_utils.R"))
+# Fonctions utilitaires chargées via le package (01_utils.R)
 
 # --- Détection des seuils phénologiques ---------------------------------------
 
@@ -294,4 +294,3 @@ fourier_features <- function(ndvi_ts, n_harmonics = 3) {
   features
 }
 
-cli::cli_alert_success("Module phénologique chargé — {length(ls())} fonctions disponibles")

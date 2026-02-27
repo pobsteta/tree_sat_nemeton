@@ -4,8 +4,7 @@
 # Téléchargement et structuration des séries temporelles Sentinel-2
 # ==============================================================================
 
-source(file.path(here::here(), "R", "00_config.R"))
-source(file.path(here::here(), "R", "01_utils.R"))
+# Configuration et utilitaires chargés via le package
 
 # ==============================================================================
 # OPTION 1 : Chargement du dataset TreeSatAI-Time-Series pré-constitué
@@ -642,4 +641,3 @@ build_feature_matrix <- function(ts_long) {
   df
 }
 
-cli::cli_alert_success("Module d'acquisition chargé")

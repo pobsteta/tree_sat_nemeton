@@ -1,0 +1,61 @@
+Package: treesatnemeton
+Title: TreeSatAI-Time-Series - Forest Species Classification from Sentinel-2
+Version: 0.1.0
+Authors@R:
+    person("Pascal", "Obstetar", role = c("aut", "cre"),
+           email = "pascal.obstetar@gmail.com")
+Description: Classification of 20 European forest tree species using annual
+    Sentinel-2 time series and phenological signatures. Based on the
+    TreeSatAI-Time-Series dataset (IGNF). Supports Random Forest and
+    deep learning (PyTorch) models, automatic satellite data download from
+    Microsoft Planetary Computer, and spatial prediction on any area of
+    interest (AOI).
+License: MIT + file LICENSE
+URL: https://github.com/pobsteta/tree_sat_nemeton
+BugReports: https://github.com/pobsteta/tree_sat_nemeton/issues
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2
+Depends:
+    R (>= 4.1.0)
+Imports:
+    cli,
+    dplyr,
+    glue,
+    ggplot2,
+    httr2,
+    jsonlite,
+    lubridate,
+    patchwork,
+    pracma,
+    purrr,
+    ranger,
+    RColorBrewer,
+    readr,
+    rstac,
+    scales,
+    sf,
+    signal,
+    stringr,
+    terra,
+    tidyr,
+    viridis,
+    zoo
+Suggests:
+    caret,
+    data.table,
+    e1071,
+    furrr,
+    future,
+    future.apply,
+    luz,
+    MLmetrics,
+    pheatmap,
+    randomForest,
+    reticulate,
+    sen2r,
+    stars,
+    torch,
+    xts,
+    yaml,
+    yardstick
