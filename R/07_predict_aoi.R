@@ -498,19 +498,64 @@ predict_species_map <- function(aoi_path,
 
   if (!use_pytorch) {
     # --- Mode ranger (R) ---
+    # Chercher un modèle existant : chemin explicite, puis défaut
+    default_rds <- file.path(MODELS_DIR, "treesatai_rf.rds")
+
     if (!is.null(model_path) && file.exists(model_path) && grepl("\\.rds$", model_path)) {
       model <- readRDS(model_path)
       log_msg("  Modèle ranger chargé depuis {model_path}", level = "success")
       log_msg("  Classes : {model$n_classes} espèces")
+
+    } else if (file.exists(default_rds)) {
+      model <- readRDS(default_rds)
+      log_msg("  Modèle ranger chargé depuis {default_rds}", level = "success")
+      log_msg("  Classes : {model$n_classes} espèces")
+
     } else {
-      cli::cli_alert_danger("Aucun modèle pré-entraîné trouvé.")
+      # --- Auto-entraînement sur les données synthétiques TreeSatAI ---
+      cli::cli_alert_warning("Aucun modèle pré-entraîné trouvé.")
+      cli::cli_alert_info("Auto-entraînement d'un modèle Random Forest sur les données TreeSatAI synthétiques...")
       cli::cli_text("")
-      cli::cli_text("Entraînez d'abord un modèle avec le pipeline :")
-      cli::cli_text("  {.code Rscript R/06_pipeline.R --data /chemin/vers/donnees}")
+
+      # 1. Générer le dataset synthétique (20 espèces × 50 échantillons)
+      ts_long <- generate_synthetic_dataset(n_samples_per_species = 50, year = year)
+
+      # 2. Construire la matrice de features
+      feature_matrix <- build_feature_matrix(ts_long)
+
+      # 3. Split train/test
+      split <- split_train_test(feature_matrix, target_col = "species_name")
+      train_data <- split$train
+      test_data  <- split$test
+
+      # 4. Sélectionner les features
+      feature_cols <- select_features(feature_matrix)
+
+      # 5. Entraîner le Random Forest
+      model <- train_random_forest(train_data, feature_cols)
+
+      # 6. Évaluer
+      rf_preds <- predict_rf(model, test_data)
+      rf_eval <- evaluate_classification(
+        y_true      = test_data$species_name,
+        y_pred      = rf_preds$predicted_class,
+        class_names = SPECIES$french
+      )
+
+      # 7. Sauvegarder pour les prochaines utilisations
+      save_model(model, rf_eval, model_name = "treesatai_rf")
+
+      cli::cli_alert_success(
+        "Modèle auto-entraîné — OA : {round(rf_eval$overall_accuracy * 100, 1)}%, Kappa : {round(rf_eval$kappa, 3)}"
+      )
+      cli::cli_alert_info(
+        "Modèle sauvegardé dans {default_rds} — il sera réutilisé aux prochains appels."
+      )
       cli::cli_text("")
-      cli::cli_text("Puis relancez avec :")
-      cli::cli_text('  {.code predict_species_map("{aoi_path}", model_path = "output/models/treesatai_rf.rds")}')
-      stop("Modèle requis. Entraînez-en un d'abord avec 06_pipeline.R")
+      cli::cli_alert_warning(
+        "Ce modèle est basé sur des données synthétiques. Pour de meilleurs résultats, entraînez sur des données réelles :"
+      )
+      cli::cli_text("  {.code Rscript R/06_pipeline.R --data /chemin/vers/parcelles}")
     }
   }
 

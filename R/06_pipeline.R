@@ -5,8 +5,10 @@
 # par séries temporelles Sentinel-2 annuelles
 #
 # Usage :
-#   Rscript R/06_pipeline.R --data /chemin/dataset  # Données réelles
-#   Rscript R/06_pipeline.R --data /chemin --mode cnn  # Avec CNN temporel
+#   Rscript R/06_pipeline.R --data /chemin/dataset       # Données réelles
+#   Rscript R/06_pipeline.R --data /chemin --mode cnn    # Avec CNN temporel
+#   Rscript R/06_pipeline.R --synthetic                  # Données synthétiques TreeSatAI
+#   Rscript R/06_pipeline.R --synthetic --n-samples 100  # Plus d'échantillons
 # ==============================================================================
 
 # --- Chargement des modules ---------------------------------------------------
@@ -23,11 +25,15 @@ args <- commandArgs(trailingOnly = TRUE)
 DATA_PATH   <- NULL
 MODE        <- "rf"       # "rf" ou "cnn"
 SKIP_VIZ    <- FALSE
+USE_SYNTHETIC <- FALSE
+N_SAMPLES   <- 50         # Échantillons par espèce (mode synthétique)
 
 for (i in seq_along(args)) {
-  if (args[i] == "--data" && i < length(args))    DATA_PATH <- args[i + 1]
-  if (args[i] == "--mode" && i < length(args))    MODE      <- args[i + 1]
-  if (args[i] == "--no-viz")                       SKIP_VIZ  <- TRUE
+  if (args[i] == "--data" && i < length(args))      DATA_PATH <- args[i + 1]
+  if (args[i] == "--mode" && i < length(args))      MODE      <- args[i + 1]
+  if (args[i] == "--no-viz")                         SKIP_VIZ  <- TRUE
+  if (args[i] == "--synthetic")                      USE_SYNTHETIC <- TRUE
+  if (args[i] == "--n-samples" && i < length(args))  N_SAMPLES <- as.integer(args[i + 1])
 }
 
 # ==============================================================================
@@ -40,7 +46,18 @@ cli::cli_text("")
 # ==============================================================================
 cli::cli_h2("Étape 1 — Acquisition des données")
 
-if (!is.null(DATA_PATH)) {
+if (USE_SYNTHETIC) {
+  # ---- Mode données synthétiques TreeSatAI ----
+  cli::cli_alert_info("Mode synthétique : génération de {N_SAMPLES} échantillons × {nrow(SPECIES)} espèces")
+  cli::cli_text("")
+  cli::cli_text("Les profils phénologiques sont basés sur les signatures spectrales")
+  cli::cli_text("caractéristiques de chaque essence (double logistique + bruit).")
+  cli::cli_text("")
+
+  ts_long <- generate_synthetic_dataset(n_samples_per_species = N_SAMPLES, year = 2021)
+  cli::cli_alert_success("Dataset synthétique généré : {nrow(ts_long)} observations")
+
+} else if (!is.null(DATA_PATH)) {
   # ---- Mode données réelles ----
   cli::cli_alert_info("Chargement des données depuis : {DATA_PATH}")
 
@@ -80,13 +97,15 @@ if (!is.null(DATA_PATH)) {
   cli::cli_text("")
   cli::cli_text("Usage :")
   cli::cli_text("  Rscript R/06_pipeline.R --data /chemin/vers/donnees")
+  cli::cli_text("  Rscript R/06_pipeline.R --synthetic                  # Données synthétiques TreeSatAI")
+  cli::cli_text("  Rscript R/06_pipeline.R --synthetic --n-samples 100  # Plus d'échantillons par espèce")
   cli::cli_text("")
   cli::cli_text("Le répertoire doit contenir :")
   cli::cli_ul()
   cli::cli_li("Un fichier vectoriel (.gpkg, .shp) avec les parcelles et espèces")
   cli::cli_li("Des séries temporelles (.csv) ou des images Sentinel-2 brutes")
   cli::cli_end()
-  stop("Argument --data obligatoire. Pas de données, pas de pipeline.")
+  stop("Argument --data ou --synthetic obligatoire. Pas de données, pas de pipeline.")
 }
 
 # ==============================================================================
