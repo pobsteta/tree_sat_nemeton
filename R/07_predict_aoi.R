@@ -19,6 +19,7 @@ source(file.path(here::here(), "R", "01_utils.R"))
 source(file.path(here::here(), "R", "02_phenology.R"))
 source(file.path(here::here(), "R", "05_classification.R"))
 source(file.path(here::here(), "R", "08_download_satellite.R"))
+source(file.path(here::here(), "R", "09_python_bridge.R"))
 
 # ==============================================================================
 # 1. TÉLÉCHARGEMENT DES SÉRIES TEMPORELLES SENTINEL-2 SUR L'AOI
@@ -465,6 +466,9 @@ build_species_raster <- function(predictions, pixel_features) {
 #' @param resolution Résolution cible en mètres
 #' @param auto_download Télécharger automatiquement S2/S1 si pas de données locales
 #' @param use_s1 Inclure les features Sentinel-1 dans la classification
+#' @param use_pytorch Utiliser un modèle PyTorch (.pt) au lieu de ranger (.rds)
+#'                    Nécessite l'environnement conda "treesat" (setup_python_env())
+#' @param pytorch_model Architecture PyTorch : "tempcnn", "lstm", "transformer", "inception"
 #' @return Liste avec les rasters et statistiques
 predict_species_map <- function(aoi_path,
                                  s2_dir       = NULL,
@@ -474,7 +478,9 @@ predict_species_map <- function(aoi_path,
                                  output_dir   = OUTPUT_DIR,
                                  resolution   = 10,
                                  auto_download = FALSE,
-                                 use_s1       = FALSE) {
+                                 use_s1       = FALSE,
+                                 use_pytorch  = FALSE,
+                                 pytorch_model = "tempcnn") {
 
   cli::cli_h1("TreeSatAI — Détection d'essences sur zone d'intérêt")
   t_start <- Sys.time()
@@ -505,42 +511,80 @@ predict_species_map <- function(aoi_path,
   # --- 2. Charger ou entraîner le modèle ---
   cli::cli_h2("2. Modèle de classification")
 
-  if (!is.null(model_path) && file.exists(model_path)) {
-    model <- readRDS(model_path)
-    log_msg("  Modèle chargé depuis {model_path}", level = "success")
-    log_msg("  Classes : {model$n_classes} espèces")
-  } else {
-    log_msg("  Aucun modèle pré-entraîné → entraînement sur données synthétiques")
-    log_msg("  (Pour de meilleurs résultats, entraînez d'abord sur des données IFN)")
+  py_model <- NULL  # Modèle PyTorch (si use_pytorch)
 
-    source(file.path(here::here(), "R", "03_data_acquisition.R"))
+  if (use_pytorch) {
+    # --- Mode PyTorch ---
+    log_msg("  Mode : PyTorch ({pytorch_model})")
 
-    # Générer le dataset d'entraînement
-    TS_PARAMS$year       <<- year
-    TS_PARAMS$start_date <<- paste0(year, "-01-01")
-    TS_PARAMS$end_date   <<- paste0(year, "-12-31")
+    if (!check_python_ready()) {
+      cli::cli_alert_info("Initialisation de l'environnement Python...")
+      setup_ok <- setup_python_env()
+      if (!setup_ok) {
+        cli::cli_alert_danger("Impossible d'initialiser Python. Repli sur ranger.")
+        use_pytorch <- FALSE
+      }
+    }
 
-    ts_synth <- generate_synthetic_dataset(n_samples_per_species = 100, year = year)
-    ts_synth <- ts_synth |>
-      dplyr::mutate(
-        NDVI   = calc_ndvi(B08, B04),
-        EVI    = calc_evi(B08, B04, B02),
-        NDWI   = calc_ndwi(B08, B11),
-        CRI    = calc_cri(B03, B05),
-        RENDVI = calc_rendvi(B08, B05),
-        NBR    = calc_nbr(B08, B12)
-      )
+    if (use_pytorch) {
+      if (!is.null(model_path) && file.exists(model_path) && grepl("\\.pt$", model_path)) {
+        py_model <- py_load_model(model_path)
+      } else {
+        # Chercher un modèle .pt existant
+        default_pt <- file.path(MODELS_DIR, paste0("treesatai_", pytorch_model, "_best.pt"))
+        if (file.exists(default_pt)) {
+          py_model <- py_load_model(default_pt)
+        } else {
+          cli::cli_alert_warning("Aucun modèle PyTorch trouvé.")
+          cli::cli_text("Entraînez d'abord : {.code py_train_model('data.csv', model_type = '{pytorch_model}')}")
+          cli::cli_text("Ou depuis le terminal : {.code python python/train.py --data data.csv --model {pytorch_model}}")
+          cli::cli_text("")
+          cli::cli_alert_info("Repli sur Random Forest (ranger)")
+          use_pytorch <- FALSE
+        }
+      }
+    }
+  }
 
-    feature_matrix <- build_feature_matrix(ts_synth)
-    feature_cols <- select_features(feature_matrix)
+  if (!use_pytorch) {
+    # --- Mode ranger (R) ---
+    if (!is.null(model_path) && file.exists(model_path) && grepl("\\.rds$", model_path)) {
+      model <- readRDS(model_path)
+      log_msg("  Modèle ranger chargé depuis {model_path}", level = "success")
+      log_msg("  Classes : {model$n_classes} espèces")
+    } else {
+      log_msg("  Aucun modèle pré-entraîné → entraînement sur données synthétiques")
+      log_msg("  (Pour de meilleurs résultats, entraînez d'abord sur des données IFN)")
 
-    model <- train_random_forest(feature_matrix, feature_cols, target_col = "species_name")
+      source(file.path(here::here(), "R", "03_data_acquisition.R"))
 
-    # Sauvegarder le modèle
-    dir.create(MODELS_DIR, showWarnings = FALSE, recursive = TRUE)
-    model_save_path <- file.path(MODELS_DIR, "treesatai_rf_synthetic.rds")
-    saveRDS(model, model_save_path)
-    log_msg("  Modèle sauvegardé : {model_save_path}", level = "success")
+      # Générer le dataset d'entraînement
+      TS_PARAMS$year       <<- year
+      TS_PARAMS$start_date <<- paste0(year, "-01-01")
+      TS_PARAMS$end_date   <<- paste0(year, "-12-31")
+
+      ts_synth <- generate_synthetic_dataset(n_samples_per_species = 100, year = year)
+      ts_synth <- ts_synth |>
+        dplyr::mutate(
+          NDVI   = calc_ndvi(B08, B04),
+          EVI    = calc_evi(B08, B04, B02),
+          NDWI   = calc_ndwi(B08, B11),
+          CRI    = calc_cri(B03, B05),
+          RENDVI = calc_rendvi(B08, B05),
+          NBR    = calc_nbr(B08, B12)
+        )
+
+      feature_matrix <- build_feature_matrix(ts_synth)
+      feature_cols <- select_features(feature_matrix)
+
+      model <- train_random_forest(feature_matrix, feature_cols, target_col = "species_name")
+
+      # Sauvegarder le modèle
+      dir.create(MODELS_DIR, showWarnings = FALSE, recursive = TRUE)
+      model_save_path <- file.path(MODELS_DIR, "treesatai_rf_synthetic.rds")
+      saveRDS(model, model_save_path)
+      log_msg("  Modèle sauvegardé : {model_save_path}", level = "success")
+    }
   }
 
   # --- 3. Construire le cube Sentinel-2 ---
@@ -664,7 +708,30 @@ predict_species_map <- function(aoi_path,
 
   # --- 5. Classification ---
   cli::cli_h2("5. Classification des pixels")
-  predictions <- classify_pixels(pixel_features, model)
+
+  if (use_pytorch && !is.null(py_model)) {
+    # --- Classification PyTorch ---
+    predictions <- classify_pixels_pytorch(
+      pixel_features, model_path = NULL,
+      cube_list = cube_list, batch_size = 512L
+    )
+    # classify_pixels_pytorch charge le modèle — on le passe directement ici
+    # pour éviter de le recharger :
+    pixel_data <- cube_to_pytorch_array(
+      cube_list, pixel_features$valid_idx, bands = S2_BAND_NAMES
+    )
+    py_results <- py_predict_pixels(py_model, pixel_data, batch_size = 512L)
+    predictions <- list(
+      class_idx    = py_results$predicted_class,
+      class_names  = py_model$class_names,
+      max_proba    = py_results$max_proba,
+      all_probas   = py_results$probabilities,
+      valid_idx    = pixel_features$valid_idx
+    )
+  } else {
+    # --- Classification ranger (R) ---
+    predictions <- classify_pixels(pixel_features, model)
+  }
 
   # --- 6. Construction du raster ---
   cli::cli_h2("6. Production de la carte")
@@ -1077,6 +1144,8 @@ if (!interactive()) {
   out_arg       <- OUTPUT_DIR
   auto_dl       <- FALSE
   use_s1_arg    <- FALSE
+  use_pt_arg    <- FALSE
+  arch_arg      <- "tempcnn"
 
   for (i in seq_along(args)) {
     if (args[i] == "--aoi" && i < length(args))    aoi_file   <- args[i + 1]
@@ -1088,6 +1157,8 @@ if (!interactive()) {
     if (args[i] == "--output" && i < length(args)) out_arg    <- args[i + 1]
     if (args[i] == "--download")                    auto_dl    <- TRUE
     if (args[i] == "--use-s1")                      use_s1_arg <- TRUE
+    if (args[i] == "--pytorch")                     use_pt_arg <- TRUE
+    if (args[i] == "--arch" && i < length(args))   arch_arg   <- args[i + 1]
   }
 
   if (is.null(aoi_file)) {
@@ -1096,12 +1167,14 @@ if (!interactive()) {
     cat("  --aoi <fichier>     Fichier GeoPackage/Shapefile de la zone d'intérêt\n")
     cat("  --s2 <dossier>      Répertoire des images Sentinel-2 L2A\n")
     cat("  --s1 <dossier>      Répertoire des images Sentinel-1 GRD\n")
-    cat("  --model <fichier>   Modèle pré-entraîné (.rds)\n")
+    cat("  --model <fichier>   Modèle pré-entraîné (.rds ou .pt)\n")
     cat("  --year <année>      Année d'analyse (défaut: 2021)\n")
     cat("  --res <mètres>      Résolution cible (défaut: 10)\n")
     cat("  --output <dossier>  Répertoire de sortie\n")
     cat("  --download          Télécharger automatiquement S2 (+S1) depuis CDSE\n")
     cat("  --use-s1            Inclure les features Sentinel-1 (radar)\n")
+    cat("  --pytorch           Utiliser un modèle PyTorch (.pt) au lieu de ranger\n")
+    cat("  --arch <modèle>     Architecture PyTorch : tempcnn, lstm, transformer, inception\n")
     quit(status = 1)
   }
 
@@ -1114,9 +1187,12 @@ if (!interactive()) {
     output_dir    = out_arg,
     resolution    = res_arg,
     auto_download = auto_dl,
-    use_s1        = use_s1_arg
+    use_s1        = use_s1_arg,
+    use_pytorch   = use_pt_arg,
+    pytorch_model = arch_arg
   )
 }
 
 cli::cli_alert_success("Module de prédiction AOI chargé")
 cli::cli_text("Utilisez : {.code result <- predict_species_map('aoi.gpkg')}")
+cli::cli_text("Avec PyTorch : {.code result <- predict_species_map('aoi.gpkg', use_pytorch = TRUE)}")

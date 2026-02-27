@@ -1,0 +1,66 @@
+name: treesat
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+
+dependencies:
+  # Python
+  - python=3.11
+
+  # PyTorch + CUDA (GPU) — remplacer par cpuonly si pas de GPU
+  - pytorch>=2.1
+  - torchvision>=0.16
+  - torchaudio>=2.1
+  - pytorch-cuda=12.1  # Commenter et décommenter cpuonly si pas de GPU
+  # - cpuonly           # Décommenter si pas de GPU NVIDIA
+
+  # Données géospatiales
+  - rasterio>=1.3
+  - geopandas>=0.14
+  - shapely>=2.0
+  - fiona>=1.9
+  - pyproj>=3.6
+
+  # Calcul scientifique
+  - numpy>=1.24
+  - scipy>=1.11
+  - pandas>=2.1
+  - scikit-learn>=1.3
+
+  # Séries temporelles
+  - tslearn>=0.6
+
+  # Visualisation
+  - matplotlib>=3.8
+  - seaborn>=0.13
+
+  # STAC / téléchargement satellite
+  - pystac-client>=0.7
+  - planetary-computer>=1.0
+  - stackstac>=0.5
+
+  # Utilitaires
+  - tqdm>=4.66
+  - pyyaml>=6.0
+  - click>=8.1
+  - rich>=13.0
+  - joblib>=1.3
+
+  # Jupyter (optionnel, pour exploration)
+  - jupyterlab>=4.0
+  - ipywidgets>=8.1
+
+  # pip extras
+  - pip
+
+  - pip:
+    # Sentinel Hub / CDSE
+    - sentinelhub>=3.10
+    - oauthlib>=3.2
+    # Métriques
+    - torchmetrics>=1.2
+    # ONNX export (optionnel)
+    - onnx>=1.15
+    - onnxruntime>=1.16

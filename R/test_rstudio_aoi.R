@@ -36,6 +36,10 @@ MODE <- "demo"
 # MODE 3 : Données locales (vous avez déjà les images)
 # MODE <- "local"
 
+# MODE 4 : PyTorch (utilise un modèle DL au lieu de Random Forest)
+#   Nécessite : conda activate treesat (ou setup_python_env() depuis R)
+# MODE <- "pytorch"
+
 # ----- PARAMÈTRES -----
 
 # (Mode local) Répertoire de vos images Sentinel-2 L2A
@@ -152,6 +156,20 @@ if (MODE == "download") {
     use_s1     = USE_S1
   )
 
+} else if (MODE == "pytorch") {
+  # --- Mode PyTorch (Deep Learning) ---
+  result <- predict_species_map(
+    aoi_path      = AOI_PATH,
+    s2_dir        = S2_DIR,
+    model_path    = MODEL_PATH,
+    year          = YEAR,
+    output_dir    = file.path(here::here(), "output"),
+    resolution    = RESOLUTION,
+    auto_download = FALSE,
+    use_pytorch   = TRUE,
+    pytorch_model = "tempcnn"
+  )
+
 } else {
   # --- Mode démo (défaut) ---
   result <- predict_species_map(
@@ -242,7 +260,39 @@ cat("  output/legende_especes.csv   — légende des codes\n")
 # )
 
 # ==============================================================================
-# BLOC 7b (optionnel) — Améliorer les résultats avec un vrai modèle
+# BLOC 7b (optionnel) — Utiliser un modèle PyTorch (TempCNN, Transformer...)
+# ==============================================================================
+
+# ÉTAPE 1 : Installer l'environnement Python conda "treesat"
+#   source("R/09_python_bridge.R")
+#   setup_python_env()   # crée l'env conda depuis environment.yml
+
+# ÉTAPE 2 : Entraîner un modèle PyTorch
+#   # Depuis R :
+#   py_train_model("data/processed/feature_matrix.csv", model_type = "tempcnn")
+#   # Ou depuis le terminal :
+#   # conda activate treesat
+#   # python python/train.py --data data/processed/feature_matrix.csv --model tempcnn
+
+# ÉTAPE 3 : Prédire avec le modèle PyTorch
+#   result <- predict_species_map(
+#     aoi_path      = AOI_PATH,
+#     auto_download = TRUE,
+#     year          = 2023,
+#     use_pytorch   = TRUE,
+#     pytorch_model = "tempcnn",   # ou "lstm", "transformer", "inception"
+#     model_path    = "output/models/treesatai_tempcnn_best.pt"
+#   )
+
+# Architectures disponibles :
+#   - "tempcnn"     : Temporal CNN (Pelletier et al. 2019) — rapide, bon par défaut
+#   - "lstm"        : LSTM bidirectionnel — capture les dépendances longues
+#   - "transformer" : Transformer encoder — attention sur les dates clés
+#   - "inception"   : InceptionTime — multi-échelle temporelle
+#   - "multisource" : TempCNN fusion S2+S1 (nécessite use_s1 = TRUE)
+
+# ==============================================================================
+# BLOC 7c (optionnel) — Améliorer les résultats avec un vrai modèle ranger
 # ==============================================================================
 
 # Le mode démonstration utilise un modèle entraîné sur données synthétiques.
