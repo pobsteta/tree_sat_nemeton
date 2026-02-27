@@ -1,0 +1,26 @@
+# Données
+data/raw/
+data/processed/
+data/timeseries/
+*.tif
+*.jp2
+*.zip
+*.tar.gz
+
+# Sorties
+output/models/*.rds
+figures/*.png
+figures/*.pdf
+
+# R
+.Rhistory
+.Rdata
+.RData
+.Rproj.user
+*.Rproj
+
+# Système
+.DS_Store
+Thumbs.db
+*.swp
+*~
