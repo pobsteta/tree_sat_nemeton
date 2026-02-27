@@ -18,6 +18,7 @@ source(file.path(here::here(), "R", "00_config.R"))
 source(file.path(here::here(), "R", "01_utils.R"))
 source(file.path(here::here(), "R", "02_phenology.R"))
 source(file.path(here::here(), "R", "05_classification.R"))
+source(file.path(here::here(), "R", "08_download_satellite.R"))
 
 # ==============================================================================
 # 1. TÉLÉCHARGEMENT DES SÉRIES TEMPORELLES SENTINEL-2 SUR L'AOI
@@ -455,19 +456,25 @@ build_species_raster <- function(predictions, pixel_features) {
 #' Pipeline complet de prédiction sur une zone d'intérêt
 #'
 #' @param aoi_path Chemin vers le fichier GeoPackage (ou Shapefile) de l'AOI
-#' @param s2_dir Répertoire contenant les images Sentinel-2 L2A (NULL = STAC)
+#' @param s2_dir Répertoire contenant les images Sentinel-2 L2A (NULL = auto-download ou démo)
+#' @param s1_dir Répertoire contenant les images Sentinel-1 GRD (NULL = optionnel)
 #' @param model_path Chemin vers le modèle pré-entraîné (.rds)
 #'                   NULL = entraîner un nouveau modèle sur données synthétiques
 #' @param year Année d'analyse
 #' @param output_dir Répertoire de sortie
 #' @param resolution Résolution cible en mètres
+#' @param auto_download Télécharger automatiquement S2/S1 si pas de données locales
+#' @param use_s1 Inclure les features Sentinel-1 dans la classification
 #' @return Liste avec les rasters et statistiques
 predict_species_map <- function(aoi_path,
-                                 s2_dir     = NULL,
-                                 model_path = NULL,
-                                 year       = 2021,
-                                 output_dir = OUTPUT_DIR,
-                                 resolution = 10) {
+                                 s2_dir       = NULL,
+                                 s1_dir       = NULL,
+                                 model_path   = NULL,
+                                 year         = 2021,
+                                 output_dir   = OUTPUT_DIR,
+                                 resolution   = 10,
+                                 auto_download = FALSE,
+                                 use_s1       = FALSE) {
 
   cli::cli_h1("TreeSatAI — Détection d'essences sur zone d'intérêt")
   t_start <- Sys.time()
@@ -551,40 +558,84 @@ predict_species_map <- function(aoi_path,
 
     dates <- as.Date(names(cube_list))
 
+  } else if (auto_download) {
+    # --- Mode téléchargement automatique ---
+    cli::cli_h3("Téléchargement automatique des données satellite")
+    cli::cli_text("Compte CDSE requis : https://dataspace.copernicus.eu")
+    cli::cli_text("")
+
+    sat_data <- download_satellite_data(
+      aoi_path    = aoi_path,
+      year        = year,
+      download_s2 = TRUE,
+      download_s1 = use_s1,
+      max_cloud   = TS_PARAMS$max_cloud_cover,
+      output_dir  = RAW_DIR
+    )
+
+    if (!is.null(sat_data$s2_dir)) {
+      # Chercher le sous-dossier "bands" créé par extract_s2_bands
+      s2_bands_dir <- file.path(sat_data$s2_dir, "bands")
+      if (!dir.exists(s2_bands_dir)) s2_bands_dir <- sat_data$s2_dir
+
+      cube_list <- build_s2_cube(s2_bands_dir, aoi, bands = S2_BAND_NAMES,
+                                  year = year, resolution = resolution)
+      dates <- as.Date(names(cube_list))
+
+      # Sentinel-1 si disponible
+      if (use_s1 && !is.null(sat_data$s1_dir)) {
+        s1_bands_dir <- preprocess_s1(sat_data$s1_dir, aoi, resolution)
+        s1_cube <- build_s1_cube(s1_bands_dir, aoi, year, resolution)
+      }
+    } else {
+      cli::cli_alert_danger("Téléchargement S2 échoué — passage en mode démo")
+      cube_result <- generate_demo_cube(aoi, year = year, resolution = resolution)
+      cube_list <- cube_result$cube
+      dates     <- cube_result$dates
+    }
+
   } else {
-    # Mode STAC : rechercher les scènes disponibles
-    cli::cli_alert_info("Pas de répertoire S2 local fourni.")
+    # --- Mode interactif : proposer les options ---
+    cli::cli_alert_info("Pas de données satellite locales fournies.")
     cli::cli_text("")
-    cli::cli_text("Pour utiliser des données Sentinel-2 réelles, deux options :")
+    cli::cli_text("3 options disponibles :")
     cli::cli_text("")
-    cli::cli_h3("Option A : données locales")
+    cli::cli_h3("Option A : Données locales")
     cli::cli_text('  predict_species_map("{aoi_path}", s2_dir = "/chemin/vers/S2/")')
-    cli::cli_text("  Structure attendue : un dossier avec les .tif ou .jp2 Sentinel-2")
-    cli::cli_text("  Noms de fichiers contenant la date (YYYYMMDD) et la bande (B02, B04...)")
     cli::cli_text("")
-    cli::cli_h3("Option B : téléchargement depuis Copernicus")
-    cli::cli_text("  1. Créez un compte sur https://dataspace.copernicus.eu")
-    cli::cli_text("  2. Recherchez les scènes :")
+    cli::cli_h3("Option B : Téléchargement automatique (compte CDSE)")
+    cli::cli_text('  predict_species_map("{aoi_path}", auto_download = TRUE, year = {year})')
+    cli::cli_text('  # Avec Sentinel-1 (radar) en plus :')
+    cli::cli_text('  predict_species_map("{aoi_path}", auto_download = TRUE, use_s1 = TRUE)')
+    cli::cli_text("")
+    cli::cli_h3("Option C : Mode démonstration")
+    cli::cli_text("  Données synthétiques sur votre AOI pour tester le pipeline")
+    cli::cli_text("")
 
-    scenes <- search_s2_for_aoi(aoi, year = year, max_cloud = 30)
-    if (!is.null(scenes)) {
-      cli::cli_text("     → {length(scenes)} scènes disponibles pour {year}")
-      cli::cli_text("  3. Téléchargez via l'interface web ou l'API CDSE")
-      cli::cli_text("  4. Relancez avec s2_dir pointant vers les images téléchargées")
+    if (interactive()) {
+      # Rechercher d'abord les scènes disponibles
+      scenes <- search_s2_for_aoi(aoi, year = year, max_cloud = 30)
+      if (!is.null(scenes)) {
+        cli::cli_alert_info("{length(scenes)} scènes S2 disponibles pour {year} sur votre zone")
+      }
+
+      cli::cli_text("")
+      response <- readline("Choix (a=local / b=télécharger / c=démo) : ")
+
+      if (tolower(response) == "b") {
+        # Relancer en mode téléchargement
+        return(predict_species_map(
+          aoi_path = aoi_path, model_path = model_path,
+          year = year, output_dir = output_dir, resolution = resolution,
+          auto_download = TRUE, use_s1 = use_s1
+        ))
+      } else if (tolower(response) != "c") {
+        log_msg("Pipeline interrompu. Relancez avec s2_dir ou auto_download.", level = "warning")
+        return(NULL)
+      }
     }
 
-    cli::cli_text("")
-    cli::cli_h3("Option C : mode démonstration (sans S2)")
-    cli::cli_text("  On simule des données S2 sur votre AOI pour tester le pipeline")
-    cli::cli_text("")
-
-    response <- readline("Lancer le mode démonstration ? (o/n) : ")
-    if (!tolower(response) %in% c("o", "oui", "y", "yes")) {
-      log_msg("Pipeline interrompu.", level = "warning")
-      return(NULL)
-    }
-
-    # Mode démonstration : générer un cube synthétique sur l'AOI
+    # Mode démonstration
     cube_result <- generate_demo_cube(aoi, year = year, resolution = resolution)
     cube_list <- cube_result$cube
     dates     <- cube_result$dates
@@ -597,6 +648,18 @@ predict_species_map <- function(aoi_path,
   if (is.null(pixel_features)) {
     cli::cli_alert_danger("Échec de l'extraction des features")
     return(NULL)
+  }
+
+  # Intégration des features Sentinel-1 si disponibles
+  if (use_s1 && exists("s1_cube") && !is.null(s1_cube)) {
+    cli::cli_h3("4b. Features Sentinel-1 (radar)")
+    s1_features <- extract_s1_pixel_features(s1_cube, pixel_features)
+    if (!is.null(s1_features)) {
+      # Fusionner avec les features S2
+      pixel_features$features <- cbind(pixel_features$features, s1_features)
+      pixel_features$feature_names <- colnames(pixel_features$features)
+      log_msg("  Features S1 ajoutées : {ncol(s1_features)} colonnes radar")
+    }
   }
 
   # --- 5. Classification ---
@@ -677,6 +740,68 @@ predict_species_map <- function(aoi_path,
     model             = model,
     legend            = rasters$legend
   ))
+}
+
+# ==============================================================================
+# 3b. EXTRACTION DES FEATURES SENTINEL-1 PIXEL PAR PIXEL
+# ==============================================================================
+
+#' Extraction des features radar S1 pour les mêmes pixels que S2
+#' @param s1_cube Liste de SpatRaster S1 (VV, VH, ratio par date)
+#' @param pixel_features Résultat de extract_pixel_features (pour valid_idx, template)
+#' @return Matrice de features S1 (n_valid × n_s1_features)
+extract_s1_pixel_features <- function(s1_cube, pixel_features) {
+  log_msg("Extraction des features Sentinel-1...")
+
+  if (is.null(s1_cube) || length(s1_cube) == 0) {
+    log_msg("  Pas de données S1 disponibles", level = "warning")
+    return(NULL)
+  }
+
+  n_dates_s1 <- length(s1_cube)
+  valid_idx  <- pixel_features$valid_idx
+  n_valid    <- length(valid_idx)
+  n_pixels   <- pixel_features$n_rows * pixel_features$n_cols
+
+  log_msg("  {n_dates_s1} dates S1 × {n_valid} pixels valides")
+
+  # Charger le cube S1 en mémoire
+  s1_pols <- c("VV", "VH")
+  s1_arrays <- list()
+
+  for (pol in s1_pols) {
+    pol_mat <- matrix(NA_real_, nrow = n_pixels, ncol = n_dates_s1)
+    for (d in seq_len(n_dates_s1)) {
+      layer_name <- grep(paste0("^", pol, "_"), names(s1_cube[[d]]), value = TRUE)
+      if (length(layer_name) > 0) {
+        vals <- terra::values(s1_cube[[d]][[layer_name[1]]])
+        pol_mat[, d] <- as.numeric(vals)
+      }
+    }
+    s1_arrays[[pol]] <- pol_mat
+  }
+
+  # Extraire les features S1 par pixel
+  feature_list <- vector("list", n_valid)
+
+  for (i in seq_len(n_valid)) {
+    px <- valid_idx[i]
+    vv_ts <- s1_arrays$VV[px, ]
+    vh_ts <- s1_arrays$VH[px, ]
+
+    feature_list[[i]] <- calc_s1_temporal_features(vv_ts, vh_ts)
+  }
+
+  # Assembler en matrice
+  feature_names <- names(feature_list[[1]])
+  feature_mat <- matrix(NA_real_, nrow = n_valid, ncol = length(feature_names))
+  colnames(feature_mat) <- feature_names
+  for (i in seq_len(n_valid)) {
+    feature_mat[i, ] <- feature_list[[i]]
+  }
+
+  log_msg("  Features S1 : {ncol(feature_mat)} colonnes", level = "success")
+  feature_mat
 }
 
 # ==============================================================================
@@ -943,20 +1068,26 @@ print_species_summary <- function(stats) {
 if (!interactive()) {
   args <- commandArgs(trailingOnly = TRUE)
 
-  aoi_file    <- NULL
-  s2_dir_arg  <- NULL
-  model_arg   <- NULL
-  year_arg    <- 2021
-  res_arg     <- 10
-  out_arg     <- OUTPUT_DIR
+  aoi_file      <- NULL
+  s2_dir_arg    <- NULL
+  s1_dir_arg    <- NULL
+  model_arg     <- NULL
+  year_arg      <- 2021
+  res_arg       <- 10
+  out_arg       <- OUTPUT_DIR
+  auto_dl       <- FALSE
+  use_s1_arg    <- FALSE
 
   for (i in seq_along(args)) {
     if (args[i] == "--aoi" && i < length(args))    aoi_file   <- args[i + 1]
     if (args[i] == "--s2" && i < length(args))     s2_dir_arg <- args[i + 1]
+    if (args[i] == "--s1" && i < length(args))     s1_dir_arg <- args[i + 1]
     if (args[i] == "--model" && i < length(args))  model_arg  <- args[i + 1]
     if (args[i] == "--year" && i < length(args))   year_arg   <- as.integer(args[i + 1])
     if (args[i] == "--res" && i < length(args))    res_arg    <- as.integer(args[i + 1])
     if (args[i] == "--output" && i < length(args)) out_arg    <- args[i + 1]
+    if (args[i] == "--download")                    auto_dl    <- TRUE
+    if (args[i] == "--use-s1")                      use_s1_arg <- TRUE
   }
 
   if (is.null(aoi_file)) {
@@ -964,20 +1095,26 @@ if (!interactive()) {
     cat("Options :\n")
     cat("  --aoi <fichier>     Fichier GeoPackage/Shapefile de la zone d'intérêt\n")
     cat("  --s2 <dossier>      Répertoire des images Sentinel-2 L2A\n")
+    cat("  --s1 <dossier>      Répertoire des images Sentinel-1 GRD\n")
     cat("  --model <fichier>   Modèle pré-entraîné (.rds)\n")
     cat("  --year <année>      Année d'analyse (défaut: 2021)\n")
     cat("  --res <mètres>      Résolution cible (défaut: 10)\n")
     cat("  --output <dossier>  Répertoire de sortie\n")
+    cat("  --download          Télécharger automatiquement S2 (+S1) depuis CDSE\n")
+    cat("  --use-s1            Inclure les features Sentinel-1 (radar)\n")
     quit(status = 1)
   }
 
   predict_species_map(
-    aoi_path   = aoi_file,
-    s2_dir     = s2_dir_arg,
-    model_path = model_arg,
-    year       = year_arg,
-    output_dir = out_arg,
-    resolution = res_arg
+    aoi_path      = aoi_file,
+    s2_dir        = s2_dir_arg,
+    s1_dir        = s1_dir_arg,
+    model_path    = model_arg,
+    year          = year_arg,
+    output_dir    = out_arg,
+    resolution    = res_arg,
+    auto_download = auto_dl,
+    use_s1        = use_s1_arg
   )
 }
 

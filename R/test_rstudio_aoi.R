@@ -21,13 +21,35 @@
 # Chemin vers votre fichier GeoPackage (zone d'intérêt)
 AOI_PATH <- "~/mon_projet/aoi.gpkg"
 
-# (Optionnel) Répertoire de vos images Sentinel-2 L2A
-# Laisser NULL pour le mode démonstration (sans images satellite)
+# ----- MODE DE FONCTIONNEMENT (décommenter UN seul mode) -----
+
+# MODE 1 : Démonstration (données synthétiques, pas besoin de satellite)
+MODE <- "demo"
+
+# MODE 2 : Téléchargement automatique S2 (+S1) depuis Copernicus
+#   Nécessite un compte gratuit sur https://dataspace.copernicus.eu
+#   Configurer dans ~/.Renviron :
+#     CDSE_USERNAME=votre@email.com
+#     CDSE_PASSWORD=motdepasse
+# MODE <- "download"
+
+# MODE 3 : Données locales (vous avez déjà les images)
+# MODE <- "local"
+
+# ----- PARAMÈTRES -----
+
+# (Mode local) Répertoire de vos images Sentinel-2 L2A
 S2_DIR <- NULL
 # S2_DIR <- "~/donnees/sentinel2/L2A/"
 
+# (Mode local) Répertoire de vos images Sentinel-1 GRD
+S1_DIR <- NULL
+# S1_DIR <- "~/donnees/sentinel1/GRD/"
+
+# Inclure Sentinel-1 (radar) ? Utile si beaucoup de nuages
+USE_S1 <- FALSE
+
 # (Optionnel) Modèle pré-entraîné
-# NULL = entraînement automatique sur données synthétiques
 MODEL_PATH <- NULL
 # MODEL_PATH <- "output/models/treesatai_rf.rds"
 
@@ -100,18 +122,46 @@ cat("Pixels est. :", format(n_pixels_est, big.mark = " "), paste0("(", RESOLUTIO
 plot(sf::st_geometry(aoi), main = "Zone d'intérêt", col = "lightgreen", border = "darkgreen")
 
 # ==============================================================================
-# BLOC 4 — LANCER LA DÉTECTION DES ESSENCES (une seule commande !)
+# BLOC 4 — LANCER LA DÉTECTION DES ESSENCES
 # ==============================================================================
 
-# C'est la commande principale : AOI en entrée → carte des essences en sortie
-result <- predict_species_map(
-  aoi_path   = AOI_PATH,
-  s2_dir     = S2_DIR,
-  model_path = MODEL_PATH,
-  year       = YEAR,
-  output_dir = file.path(here::here(), "output"),
-  resolution = RESOLUTION
-)
+# La commande s'adapte automatiquement au MODE choisi
+
+if (MODE == "download") {
+  # --- Télécharger S2 (+S1) puis classifier ---
+  result <- predict_species_map(
+    aoi_path      = AOI_PATH,
+    model_path    = MODEL_PATH,
+    year          = YEAR,
+    output_dir    = file.path(here::here(), "output"),
+    resolution    = RESOLUTION,
+    auto_download = TRUE,
+    use_s1        = USE_S1
+  )
+
+} else if (MODE == "local") {
+  # --- Données locales ---
+  result <- predict_species_map(
+    aoi_path   = AOI_PATH,
+    s2_dir     = S2_DIR,
+    s1_dir     = S1_DIR,
+    model_path = MODEL_PATH,
+    year       = YEAR,
+    output_dir = file.path(here::here(), "output"),
+    resolution = RESOLUTION,
+    use_s1     = USE_S1
+  )
+
+} else {
+  # --- Mode démo (défaut) ---
+  result <- predict_species_map(
+    aoi_path   = AOI_PATH,
+    model_path = MODEL_PATH,
+    year       = YEAR,
+    output_dir = file.path(here::here(), "output"),
+    resolution = RESOLUTION
+  )
+}
 
 # ==============================================================================
 # BLOC 5 — Visualiser les résultats
@@ -163,25 +213,51 @@ cat("  output/legende_especes.csv   — légende des codes\n")
 # system("qgis output/carte_essences.gpkg &")
 
 # ==============================================================================
-# BLOC 7 (optionnel) — Améliorer les résultats avec un vrai modèle
+# BLOC 7 (optionnel) — Télécharger les données satellite
+# ==============================================================================
+
+# Si vous voulez UNIQUEMENT télécharger les données (sans classifier) :
+
+# source("R/08_download_satellite.R")
+#
+# # Télécharger Sentinel-2 + Sentinel-1 sur votre AOI
+# sat_data <- download_satellite_data(
+#   aoi_path    = AOI_PATH,
+#   year        = YEAR,
+#   download_s2 = TRUE,    # Sentinel-2 optique
+#   download_s1 = TRUE     # Sentinel-1 radar
+# )
+#
+# # Ou séparément :
+# s2_dir <- download_s2_for_aoi(aoi, year = YEAR, max_cloud = 20)
+# s1_dir <- download_s1_for_aoi(aoi, year = YEAR)
+#
+# # Puis classifier avec les données téléchargées :
+# result <- predict_species_map(
+#   aoi_path = AOI_PATH,
+#   s2_dir   = file.path(sat_data$s2_dir, "bands"),
+#   s1_dir   = sat_data$s1_dir,
+#   use_s1   = TRUE,
+#   year     = YEAR
+# )
+
+# ==============================================================================
+# BLOC 7b (optionnel) — Améliorer les résultats avec un vrai modèle
 # ==============================================================================
 
 # Le mode démonstration utilise un modèle entraîné sur données synthétiques.
 # Pour des résultats exploitables :
 #
 # ÉTAPE 1 : Entraîner un modèle sur des données IFN + Sentinel-2 réelles
-#
 #   source("R/06_pipeline.R")  # avec --data pointant vers vos données
-#   # → produit output/models/treesatai_rf.rds
 #
 # ÉTAPE 2 : Relancer la prédiction avec le vrai modèle
-#
 #   result <- predict_species_map(
-#     aoi_path   = AOI_PATH,
-#     s2_dir     = "~/donnees/sentinel2/L2A/",      # images S2
-#     model_path = "output/models/treesatai_rf.rds", # vrai modèle
-#     year       = 2023,
-#     resolution = 10
+#     aoi_path      = AOI_PATH,
+#     auto_download = TRUE,
+#     model_path    = "output/models/treesatai_rf.rds",
+#     year          = 2023,
+#     use_s1        = TRUE
 #   )
 
 # ==============================================================================
