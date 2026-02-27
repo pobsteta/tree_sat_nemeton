@@ -1,7 +1,6 @@
 name: treesat
 channels:
   - pytorch
-  - nvidia
   - conda-forge
   - defaults
 
@@ -9,12 +8,11 @@ dependencies:
   # Python
   - python=3.11
 
-  # PyTorch + CUDA (GPU) — remplacer par cpuonly si pas de GPU
+  # PyTorch CPU (pas de GPU NVIDIA)
   - pytorch>=2.1
   - torchvision>=0.16
   - torchaudio>=2.1
-  - pytorch-cuda=12.1  # Commenter et décommenter cpuonly si pas de GPU
-  # - cpuonly           # Décommenter si pas de GPU NVIDIA
+  - cpuonly
 
   # Données géospatiales
   - rasterio>=1.3
