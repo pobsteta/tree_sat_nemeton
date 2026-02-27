@@ -1,11 +1,10 @@
 #!/usr/bin/env Rscript
 # ==============================================================================
-# TreeSatAI-Time-Series — Téléchargement automatique Sentinel-2 & Sentinel-1
-# via Copernicus Data Space Ecosystem (CDSE)
+# TreeSatAI-Time-Series — Téléchargement Sentinel-2 & Sentinel-1
+# via rstac + Copernicus Data Space Ecosystem (CDSE)
 #
 # Sentinel-2 L2A : 10 bandes optiques, résolution 10-20m
 # Sentinel-1 GRD : rétrodiffusion radar VV/VH, résolution 10m
-#   → insensible aux nuages, texture, humidité, structure du couvert
 #
 # Prérequis : compte gratuit sur https://dataspace.copernicus.eu
 # ==============================================================================
@@ -18,20 +17,18 @@ source(file.path(here::here(), "R", "01_utils.R"))
 # ==============================================================================
 
 CDSE_CONFIG <- list(
-  # Endpoints
-  stac_url   = "https://catalogue.dataspace.copernicus.eu/stac",
-  odata_url  = "https://catalogue.dataspace.copernicus.eu/odata/v1",
-  token_url  = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token",
+  stac_url     = "https://catalogue.dataspace.copernicus.eu/stac",
+  token_url    = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token",
   download_url = "https://zipper.dataspace.copernicus.eu/odata/v1",
 
   # Collections STAC
   s2_collection = "sentinel-2-l2a",
-  s1_collection = "sentinel-1-grd",
+  s1_collection = "SENTINEL-1",
 
   # Limites
   max_results = 1000,
   retry_max   = 4,
-  retry_wait  = c(2, 4, 8, 16)  # backoff exponentiel
+  retry_wait  = c(2, 4, 8, 16)
 )
 
 # Bandes Sentinel-1
@@ -51,7 +48,6 @@ S1_BAND_NAMES <- names(S1_BANDS)
 #' @param password Mot de passe CDSE
 #' @return Token d'accès (chaîne de caractères)
 cdse_get_token <- function(username = NULL, password = NULL) {
-  # Priorité : arguments > variables d'environnement > prompt interactif
   if (is.null(username)) username <- Sys.getenv("CDSE_USERNAME", unset = NA)
   if (is.null(password)) password <- Sys.getenv("CDSE_PASSWORD", unset = NA)
 
@@ -65,10 +61,7 @@ cdse_get_token <- function(username = NULL, password = NULL) {
       password <- readline("Mot de passe : ")
     } else {
       cli::cli_alert_danger("Identifiants CDSE manquants.")
-      cli::cli_text("Définir dans l'environnement :")
-      cli::cli_text("  export CDSE_USERNAME='votre@email.com'")
-      cli::cli_text("  export CDSE_PASSWORD='motdepasse'")
-      cli::cli_text("Ou dans ~/.Renviron :")
+      cli::cli_text("Définir dans ~/.Renviron :")
       cli::cli_text("  CDSE_USERNAME=votre@email.com")
       cli::cli_text("  CDSE_PASSWORD=motdepasse")
       return(NULL)
@@ -107,17 +100,17 @@ cdse_get_token <- function(username = NULL, password = NULL) {
 }
 
 # ==============================================================================
-# 2. RECHERCHE DE PRODUITS
+# 2. RECHERCHE DE PRODUITS VIA rstac
 # ==============================================================================
 
-#' Recherche de produits Sentinel-2 L2A sur une AOI via STAC
+#' Recherche de produits Sentinel-2 L2A sur une AOI via rstac
 #' @param aoi sf object — zone d'intérêt
 #' @param start_date Date de début "YYYY-MM-DD"
 #' @param end_date Date de fin "YYYY-MM-DD"
 #' @param max_cloud Couverture nuageuse max (%)
 #' @return data.frame avec métadonnées des produits
 search_sentinel2 <- function(aoi, start_date, end_date, max_cloud = 30) {
-  log_msg("Recherche Sentinel-2 L2A...")
+  log_msg("Recherche Sentinel-2 L2A via rstac...")
 
   aoi_wgs84 <- sf::st_transform(aoi, 4326)
   bbox <- as.numeric(sf::st_bbox(aoi_wgs84))
@@ -125,32 +118,47 @@ search_sentinel2 <- function(aoi, start_date, end_date, max_cloud = 30) {
   log_msg("  Bbox : [{round(bbox[1],4)}, {round(bbox[2],4)}, {round(bbox[3],4)}, {round(bbox[4],4)}]")
   log_msg("  Période : {start_date} → {end_date}, nuages ≤ {max_cloud}%")
 
-  body <- list(
-    collections = list(CDSE_CONFIG$s2_collection),
-    bbox = as.list(bbox),
-    datetime = paste0(start_date, "T00:00:00Z/", end_date, "T23:59:59Z"),
-    limit = CDSE_CONFIG$max_results,
-    query = list(
-      `eo:cloud_cover` = list(lte = max_cloud)
-    )
-  )
+  datetime_str <- paste0(start_date, "T00:00:00Z/", end_date, "T23:59:59Z")
 
-  resp <- stac_search_with_retry(body)
-  if (is.null(resp)) return(NULL)
+  # Requête STAC via rstac
+  items <- tryCatch({
+    rstac::stac(CDSE_CONFIG$stac_url) |>
+      rstac::stac_search(
+        collections = CDSE_CONFIG$s2_collection,
+        bbox        = bbox,
+        datetime    = datetime_str,
+        limit       = CDSE_CONFIG$max_results
+      ) |>
+      rstac::ext_query(`eo:cloud_cover` = list(`lte` = max_cloud)) |>
+      rstac::post_request()
+  }, error = function(e) {
+    cli::cli_alert_danger("Erreur STAC S2 : {e$message}")
+    return(NULL)
+  })
 
-  items <- httr2::resp_body_json(resp)
-  features <- items$features
-
-  if (length(features) == 0) {
+  if (is.null(items) || length(items$features) == 0) {
     log_msg("  Aucune scène S2 trouvée", level = "warning")
     return(NULL)
   }
 
-  scenes <- lapply(features, function(feat) {
+  # Pagination : récupérer toutes les pages
+  all_items <- items
+  while (rstac::items_length(all_items) < rstac::items_matched(items) &&
+         !is.null(tryCatch(rstac::items_next(all_items), error = function(e) NULL))) {
+    next_page <- tryCatch(
+      rstac::items_next(all_items) |> rstac::post_request(),
+      error = function(e) NULL
+    )
+    if (is.null(next_page) || length(next_page$features) == 0) break
+    all_items$features <- c(all_items$features, next_page$features)
+  }
+
+  # Extraire les métadonnées
+  scenes <- lapply(all_items$features, function(feat) {
     data.frame(
       id           = feat$id %||% NA_character_,
       datetime     = feat$properties$datetime %||% NA_character_,
-      date         = as.Date(substr(feat$properties$datetime, 1, 10)),
+      date         = as.Date(substr(feat$properties$datetime %||% "", 1, 10)),
       cloud_cover  = feat$properties$`eo:cloud_cover` %||% NA_real_,
       platform     = feat$properties$platform %||% NA_character_,
       product_type = "S2_L2A",
@@ -164,7 +172,6 @@ search_sentinel2 <- function(aoi, start_date, end_date, max_cloud = 30) {
   log_msg("  {nrow(result)} scènes S2 L2A trouvées ({min(result$date)} → {max(result$date)})",
           level = "success")
 
-  # Résumé mensuel
   result$month <- format(result$date, "%Y-%m")
   monthly <- table(result$month)
   log_msg("  Répartition mensuelle : {paste(names(monthly), monthly, sep=':', collapse=', ')}")
@@ -172,14 +179,14 @@ search_sentinel2 <- function(aoi, start_date, end_date, max_cloud = 30) {
   result
 }
 
-#' Recherche de produits Sentinel-1 GRD sur une AOI via STAC
+#' Recherche de produits Sentinel-1 GRD sur une AOI via rstac
 #' @param aoi sf object — zone d'intérêt
 #' @param start_date Date de début
 #' @param end_date Date de fin
-#' @param orbit_direction Direction d'orbite ("ASCENDING", "DESCENDING", ou NULL pour les deux)
+#' @param orbit_direction Direction d'orbite ("ASCENDING", "DESCENDING", ou NULL)
 #' @return data.frame avec métadonnées des produits
 search_sentinel1 <- function(aoi, start_date, end_date, orbit_direction = NULL) {
-  log_msg("Recherche Sentinel-1 GRD...")
+  log_msg("Recherche Sentinel-1 GRD via rstac...")
 
   aoi_wgs84 <- sf::st_transform(aoi, 4326)
   bbox <- as.numeric(sf::st_bbox(aoi_wgs84))
@@ -187,55 +194,44 @@ search_sentinel1 <- function(aoi, start_date, end_date, orbit_direction = NULL) 
   log_msg("  Bbox : [{round(bbox[1],4)}, {round(bbox[2],4)}, {round(bbox[3],4)}, {round(bbox[4],4)}]")
   log_msg("  Période : {start_date} → {end_date}")
 
-  # Pour S1, utiliser OData car STAC est parfois limité
-  # Filtre OData
-  filter_parts <- c(
-    "Collection/Name eq 'SENTINEL-1'",
-    glue::glue("ContentDate/Start ge {start_date}T00:00:00.000Z"),
-    glue::glue("ContentDate/Start le {end_date}T23:59:59.999Z"),
-    "Attributes/OData.CSC.StringAttribute/any(att:att/Name eq 'productType' and att/OData.CSC.StringAttribute/Value eq 'GRD')",
-    glue::glue("OData.CSC.Intersects(area=geography'SRID=4326;POLYGON(({bbox[1]} {bbox[2]},{bbox[3]} {bbox[2]},{bbox[3]} {bbox[4]},{bbox[1]} {bbox[4]},{bbox[1]} {bbox[2]}))')")
-  )
+  datetime_str <- paste0(start_date, "T00:00:00Z/", end_date, "T23:59:59Z")
 
+  # Requête STAC via rstac
+  q <- rstac::stac(CDSE_CONFIG$stac_url) |>
+    rstac::stac_search(
+      collections = CDSE_CONFIG$s1_collection,
+      bbox        = bbox,
+      datetime    = datetime_str,
+      limit       = CDSE_CONFIG$max_results
+    )
+
+  # Filtre direction d'orbite si spécifiée
   if (!is.null(orbit_direction)) {
-    filter_parts <- c(filter_parts,
-      glue::glue("Attributes/OData.CSC.StringAttribute/any(att:att/Name eq 'orbitDirection' and att/OData.CSC.StringAttribute/Value eq '{orbit_direction}')"))
+    q <- q |> rstac::ext_query(
+      `sat:orbit_state` = list(`eq` = tolower(orbit_direction))
+    )
   }
 
-  filter_str <- paste(filter_parts, collapse = " and ")
-
-  url <- paste0(CDSE_CONFIG$odata_url, "/Products?$filter=", utils::URLencode(filter_str),
-                "&$top=", CDSE_CONFIG$max_results, "&$orderby=ContentDate/Start asc")
-
-  resp <- tryCatch({
-    httr2::request(url) |>
-      httr2::req_timeout(30) |>
-      httr2::req_perform()
+  items <- tryCatch({
+    q |> rstac::post_request()
   }, error = function(e) {
-    cli::cli_alert_danger("Erreur recherche S1 : {e$message}")
+    cli::cli_alert_danger("Erreur STAC S1 : {e$message}")
     return(NULL)
   })
 
-  if (is.null(resp)) return(NULL)
-
-  data <- httr2::resp_body_json(resp)
-  products <- data$value
-
-  if (length(products) == 0) {
+  if (is.null(items) || length(items$features) == 0) {
     log_msg("  Aucun produit S1 trouvé", level = "warning")
     return(NULL)
   }
 
-  scenes <- lapply(products, function(prod) {
+  scenes <- lapply(items$features, function(feat) {
     data.frame(
-      id           = prod$Id %||% NA_character_,
-      name         = prod$Name %||% NA_character_,
-      datetime     = prod$ContentDate$Start %||% NA_character_,
-      date         = as.Date(substr(prod$ContentDate$Start, 1, 10)),
-      platform     = sub("_.*", "", prod$Name %||% ""),
+      id           = feat$id %||% NA_character_,
+      name         = feat$id %||% NA_character_,
+      datetime     = feat$properties$datetime %||% NA_character_,
+      date         = as.Date(substr(feat$properties$datetime %||% "", 1, 10)),
+      platform     = feat$properties$platform %||% NA_character_,
       product_type = "S1_GRD",
-      online       = prod$Online %||% FALSE,
-      size_mb      = round((prod$ContentLength %||% 0) / 1e6, 1),
       stringsAsFactors = FALSE
     )
   })
@@ -243,9 +239,7 @@ search_sentinel1 <- function(aoi, start_date, end_date, orbit_direction = NULL) 
   result <- do.call(rbind, scenes)
   result <- result[order(result$date), ]
 
-  total_gb <- round(sum(result$size_mb) / 1024, 1)
-  log_msg("  {nrow(result)} produits S1 GRD trouvés ({total_gb} Go total)",
-          level = "success")
+  log_msg("  {nrow(result)} produits S1 GRD trouvés", level = "success")
 
   result
 }
@@ -276,7 +270,7 @@ download_product <- function(product_id, product_name, token, output_dir) {
     result <- tryCatch({
       httr2::request(download_url) |>
         httr2::req_auth_bearer_token(token) |>
-        httr2::req_timeout(600) |>  # 10 min max par produit
+        httr2::req_timeout(600) |>
         httr2::req_perform(path = dest_file)
       TRUE
     }, error = function(e) {
@@ -295,7 +289,6 @@ download_product <- function(product_id, product_name, token, output_dir) {
       log_msg("  Attente {wait_s}s avant nouvelle tentative...")
       Sys.sleep(wait_s)
 
-      # Renouveler le token si nécessaire
       token <- cdse_get_token()
       if (is.null(token)) return(NULL)
     }
@@ -311,24 +304,22 @@ download_product <- function(product_id, product_name, token, output_dir) {
 #' @param max_cloud Couverture nuageuse max
 #' @param output_dir Répertoire de sortie
 #' @param token Token CDSE (NULL = demande interactive)
-#' @param max_scenes Nombre max de scènes à télécharger (NULL = toutes)
+#' @param max_scenes Nombre max de scènes
 #' @return Chemin vers le répertoire des données téléchargées
 download_s2_for_aoi <- function(aoi, year = 2021, max_cloud = 30,
                                  output_dir = file.path(RAW_DIR, "sentinel2"),
                                  token = NULL, max_scenes = NULL) {
   cli::cli_h2("Téléchargement Sentinel-2 L2A")
 
-  # Authentification
   if (is.null(token)) token <- cdse_get_token()
   if (is.null(token)) return(NULL)
 
-  # Recherche
   start_date <- paste0(year, "-01-01")
   end_date   <- paste0(year, "-12-31")
   scenes <- search_sentinel2(aoi, start_date, end_date, max_cloud)
   if (is.null(scenes)) return(NULL)
 
-  # Sélection temporelle optimale : garder 1 scène tous les ~10 jours
+  # Sélection temporelle : 1 scène tous les ~10 jours
   scenes <- select_best_scenes(scenes, interval_days = 10)
   log_msg("  {nrow(scenes)} scènes sélectionnées (1 / 10 jours)")
 
@@ -337,8 +328,7 @@ download_s2_for_aoi <- function(aoi, year = 2021, max_cloud = 30,
     log_msg("  Limité à {nrow(scenes)} scènes (max_scenes)")
   }
 
-  # Estimation taille
-  est_size_gb <- nrow(scenes) * 0.8  # ~800 Mo / scène en moyenne
+  est_size_gb <- nrow(scenes) * 0.8
   log_msg("  Taille estimée : ~{round(est_size_gb, 1)} Go")
 
   if (interactive()) {
@@ -351,7 +341,6 @@ download_s2_for_aoi <- function(aoi, year = 2021, max_cloud = 30,
     }
   }
 
-  # Téléchargement
   s2_dir <- file.path(output_dir, paste0("S2_L2A_", year))
   dir.create(s2_dir, showWarnings = FALSE, recursive = TRUE)
 
@@ -365,7 +354,6 @@ download_s2_for_aoi <- function(aoi, year = 2021, max_cloud = 30,
     zip_path <- download_product(scene$id, scene$id, token, s2_dir)
 
     if (!is.null(zip_path)) {
-      # Extraction
       extract_dir <- file.path(s2_dir, tools::file_path_sans_ext(basename(zip_path)))
       if (!dir.exists(extract_dir)) {
         unzip(zip_path, exdir = s2_dir)
@@ -380,7 +368,6 @@ download_s2_for_aoi <- function(aoi, year = 2021, max_cloud = 30,
   log_msg("{length(downloaded)}/{nrow(scenes)} scènes S2 téléchargées dans {s2_dir}",
           level = "success")
 
-  # Extraire et réorganiser les bandes
   extract_s2_bands(s2_dir, aoi)
 
   s2_dir
@@ -406,7 +393,7 @@ download_s1_for_aoi <- function(aoi, year = 2021,
   scenes <- search_sentinel1(aoi, start_date, end_date, orbit_direction = "DESCENDING")
   if (is.null(scenes)) return(NULL)
 
-  # Sélection : 1 scène tous les ~12 jours (revisite S1)
+  # Sélection : 1 scène tous les ~12 jours
   scenes <- select_best_scenes_s1(scenes, interval_days = 12)
   log_msg("  {nrow(scenes)} scènes S1 sélectionnées")
 
@@ -414,12 +401,9 @@ download_s1_for_aoi <- function(aoi, year = 2021,
     scenes <- scenes[1:min(max_scenes, nrow(scenes)), ]
   }
 
-  total_gb <- round(sum(scenes$size_mb) / 1024, 1)
-  log_msg("  Taille totale : {total_gb} Go")
-
   if (interactive()) {
     confirm <- readline(glue::glue(
-      "Télécharger {nrow(scenes)} scènes S1 (~{total_gb} Go) ? (o/n) : "
+      "Télécharger {nrow(scenes)} scènes S1 ? (o/n) : "
     ))
     if (!tolower(confirm) %in% c("o", "oui", "y", "yes")) {
       log_msg("Téléchargement S1 annulé", level = "warning")
@@ -435,7 +419,7 @@ download_s1_for_aoi <- function(aoi, year = 2021,
   downloaded <- c()
   for (i in seq_len(nrow(scenes))) {
     scene <- scenes[i, ]
-    log_msg("  [{i}/{nrow(scenes)}] {scene$name} ({scene$date}, {scene$size_mb} Mo)")
+    log_msg("  [{i}/{nrow(scenes)}] {scene$name} ({scene$date})")
 
     zip_path <- download_product(scene$id, scene$name, token, s1_dir)
     if (!is.null(zip_path)) {
@@ -474,14 +458,12 @@ download_satellite_data <- function(aoi_path, year = 2021,
   cli::cli_h1("Téléchargement des données satellite")
   t_start <- Sys.time()
 
-  # Charger l'AOI
   aoi <- sf::st_read(aoi_path, quiet = TRUE)
   if (nrow(aoi) > 1) aoi <- sf::st_union(aoi) |> sf::st_as_sf()
 
   aoi_area_ha <- as.numeric(sf::st_area(sf::st_transform(aoi, 2154))) / 10000
   log_msg("AOI : {round(aoi_area_ha, 1)} ha")
 
-  # Authentification unique
   token <- cdse_get_token()
   if (is.null(token)) {
     cli::cli_alert_danger("Impossible de s'authentifier — abandon")
@@ -490,7 +472,6 @@ download_satellite_data <- function(aoi_path, year = 2021,
 
   results <- list(s2_dir = NULL, s1_dir = NULL)
 
-  # --- Sentinel-2 ---
   if (download_s2) {
     results$s2_dir <- download_s2_for_aoi(
       aoi, year = year, max_cloud = max_cloud,
@@ -498,7 +479,6 @@ download_satellite_data <- function(aoi_path, year = 2021,
     )
   }
 
-  # --- Sentinel-1 ---
   if (download_s1) {
     results$s1_dir <- download_s1_for_aoi(
       aoi, year = year,
@@ -506,7 +486,6 @@ download_satellite_data <- function(aoi_path, year = 2021,
     )
   }
 
-  # Résumé
   t_elapsed <- difftime(Sys.time(), t_start, units = "mins")
   cli::cli_h2("Téléchargement terminé ({round(t_elapsed, 1)} min)")
 
@@ -525,33 +504,6 @@ download_satellite_data <- function(aoi_path, year = 2021,
 # ==============================================================================
 # 5. FONCTIONS UTILITAIRES
 # ==============================================================================
-
-#' Requête STAC avec retry et backoff exponentiel
-stac_search_with_retry <- function(body) {
-  stac_url <- paste0(CDSE_CONFIG$stac_url, "/search")
-
-  for (attempt in seq_along(c(1, CDSE_CONFIG$retry_wait))) {
-    resp <- tryCatch({
-      httr2::request(stac_url) |>
-        httr2::req_body_json(body) |>
-        httr2::req_timeout(30) |>
-        httr2::req_perform()
-    }, error = function(e) {
-      if (attempt <= length(CDSE_CONFIG$retry_wait)) {
-        wait_s <- CDSE_CONFIG$retry_wait[min(attempt, length(CDSE_CONFIG$retry_wait))]
-        cli::cli_alert_warning("Erreur STAC (tentative {attempt}) : {e$message}")
-        cli::cli_text("  Retry dans {wait_s}s...")
-        Sys.sleep(wait_s)
-      }
-      return(NULL)
-    })
-
-    if (!is.null(resp)) return(resp)
-  }
-
-  cli::cli_alert_danger("Échec STAC après {length(CDSE_CONFIG$retry_wait) + 1} tentatives")
-  NULL
-}
 
 #' Sélection des meilleures scènes S2 (1 par intervalle, moins de nuages)
 #' @param scenes data.frame de scènes
@@ -605,12 +557,10 @@ extract_s2_bands <- function(s2_dir, aoi) {
   bands_dir <- file.path(s2_dir, "bands")
   dir.create(bands_dir, showWarnings = FALSE, recursive = TRUE)
 
-  # Reprojection AOI
   aoi_proj <- sf::st_transform(aoi, 2154)
   aoi_vect <- terra::vect(aoi_proj)
-  aoi_ext  <- terra::ext(terra::buffer(aoi_vect, 500))  # 500m de marge
+  aoi_ext  <- terra::ext(terra::buffer(aoi_vect, 500))
 
-  # Trouver les fichiers jp2/tif dans les sous-dossiers SAFE
   all_bands <- list.files(s2_dir, pattern = "(B02|B03|B04|B05|B06|B07|B08|B8A|B11|B12|SCL).*\\.(jp2|tif)$",
                           recursive = TRUE, full.names = TRUE)
 
@@ -621,7 +571,6 @@ extract_s2_bands <- function(s2_dir, aoi) {
 
   log_msg("  {length(all_bands)} fichiers de bandes trouvés")
 
-  # Extraire, cropper et sauvegarder en GeoTIFF
   pb <- cli::cli_progress_bar("Extraction bandes", total = length(all_bands))
 
   for (f in all_bands) {
@@ -641,16 +590,12 @@ extract_s2_bands <- function(s2_dir, aoi) {
     if (!file.exists(out_path)) {
       tryCatch({
         r <- terra::rast(f)
-        # Reprojeter en Lambert-93 si nécessaire
         if (!terra::same.crs(r, terra::crs("EPSG:2154"))) {
           r <- terra::project(r, "EPSG:2154", method = "bilinear")
         }
-        # Cropper
         r <- terra::crop(r, aoi_ext)
-        # Sauvegarder
         terra::writeRaster(r, out_path, overwrite = TRUE)
       }, error = function(e) {
-        # Fichier illisible ou hors emprise — ignorer
       })
     }
 
@@ -665,7 +610,7 @@ extract_s2_bands <- function(s2_dir, aoi) {
   invisible(bands_dir)
 }
 
-#' Prétraitement des données Sentinel-1 GRD (calibration, terrain correction)
+#' Prétraitement des données Sentinel-1 GRD
 #' @param s1_dir Répertoire contenant les produits S1
 #' @param aoi sf object pour le crop
 #' @param resolution Résolution cible en mètres
@@ -680,7 +625,6 @@ preprocess_s1 <- function(s1_dir, aoi, resolution = 10) {
   aoi_vect <- terra::vect(aoi_proj)
   aoi_ext  <- terra::ext(terra::buffer(aoi_vect, 500))
 
-  # Trouver les fichiers de mesure dans les archives SAFE
   tiff_files <- list.files(s1_dir, pattern = "(vv|vh).*\\.tiff?$",
                            recursive = TRUE, full.names = TRUE, ignore.case = TRUE)
 
@@ -694,7 +638,6 @@ preprocess_s1 <- function(s1_dir, aoi, resolution = 10) {
   pb <- cli::cli_progress_bar("Traitement S1", total = length(tiff_files))
 
   for (f in tiff_files) {
-    # Extraire polarisation et date
     pol <- toupper(stringr::str_extract(basename(f), "(?i)(vv|vh)"))
     date_str <- stringr::str_extract(f, "\\d{8}T\\d{6}")
     if (is.na(date_str)) date_str <- stringr::str_extract(basename(f), "\\d{8}")
@@ -712,32 +655,26 @@ preprocess_s1 <- function(s1_dir, aoi, resolution = 10) {
       tryCatch({
         r <- terra::rast(f)
 
-        # Reprojection
         if (!terra::same.crs(r, terra::crs("EPSG:2154"))) {
           r <- terra::project(r, "EPSG:2154", method = "bilinear",
                               res = resolution)
         }
 
-        # Crop
         r <- terra::crop(r, aoi_ext)
 
-        # Calibration : conversion DN → sigma0 en dB
-        # sigma0_dB = 10 * log10(DN^2) - offset (simplifié)
-        # En pratique, les GRD CDSE sont souvent déjà calibrés
+        # Calibration : DN → sigma0 en dB
         vals <- terra::values(r)
         vals[vals <= 0] <- NA
         vals <- 10 * log10(vals)
         terra::values(r) <- vals
 
-        # Filtre de Lee pour réduire le speckle
+        # Filtre de Lee (speckle)
         r <- terra::focal(r, w = matrix(1, 3, 3), fun = "mean", na.rm = TRUE)
 
-        # Masquer sur l'AOI
         r <- terra::mask(r, aoi_vect)
 
         terra::writeRaster(r, out_path, overwrite = TRUE)
       }, error = function(e) {
-        # Ignorer les fichiers illisibles
       })
     }
 
@@ -757,7 +694,7 @@ preprocess_s1 <- function(s1_dir, aoi, resolution = 10) {
 #' @param aoi sf object
 #' @param year Année
 #' @param resolution Résolution cible
-#' @return Liste de SpatRaster (comme pour S2)
+#' @return Liste de SpatRaster
 build_s1_cube <- function(s1_bands_dir, aoi, year = 2021, resolution = 10) {
   log_msg("Construction du cube Sentinel-1")
 
@@ -771,7 +708,6 @@ build_s1_cube <- function(s1_bands_dir, aoi, year = 2021, resolution = 10) {
     return(NULL)
   }
 
-  # Extraire date et polarisation
   file_info <- data.frame(
     path = files,
     date = as.Date(stringr::str_extract(basename(files), "\\d{8}"), format = "%Y%m%d"),
@@ -801,9 +737,9 @@ build_s1_cube <- function(s1_bands_dir, aoi, year = 2021, resolution = 10) {
       }
     }
 
-    # Ajouter le ratio VV/VH (très discriminant pour les types forestiers)
+    # Ratio VV/VH (en dB = soustraction)
     if ("VV" %in% names(stack) && "VH" %in% names(stack)) {
-      ratio <- stack$VV - stack$VH  # En dB, soustraction = ratio
+      ratio <- stack$VV - stack$VH
       names(ratio) <- paste0("VV_VH_ratio_", format(d, "%Y%m%d"))
       stack$ratio <- ratio
     }
@@ -829,9 +765,9 @@ build_s1_cube <- function(s1_bands_dir, aoi, year = 2021, resolution = 10) {
 #' @return Liste d'indices radar
 calc_radar_indices <- function(vv, vh) {
   list(
-    VV_VH_ratio = vv - vh,                              # Ratio co/cross-pol
-    RVI = 4 * 10^(vh/10) / (10^(vv/10) + 10^(vh/10)),  # Radar Vegetation Index
-    RFDI = (10^(vv/10) - 10^(vh/10)) /                  # Radar Forest Degradation Index
+    VV_VH_ratio = vv - vh,
+    RVI = 4 * 10^(vh/10) / (10^(vv/10) + 10^(vh/10)),
+    RFDI = (10^(vv/10) - 10^(vh/10)) /
            (10^(vv/10) + 10^(vh/10))
   )
 }
@@ -843,21 +779,15 @@ calc_radar_indices <- function(vv, vh) {
 calc_s1_temporal_features <- function(vv_ts, vh_ts) {
   features <- c()
 
-  # Stats VV
   features <- c(features, calc_temporal_stats(vv_ts, prefix = "S1_VV"))
-
-  # Stats VH
   features <- c(features, calc_temporal_stats(vh_ts, prefix = "S1_VH"))
 
-  # Ratio VV/VH
   ratio_ts <- vv_ts - vh_ts
   features <- c(features, calc_temporal_stats(ratio_ts, prefix = "S1_ratio"))
 
-  # RVI temporal
   rvi_ts <- 4 * 10^(vh_ts/10) / (10^(vv_ts/10) + 10^(vh_ts/10))
   features <- c(features, calc_temporal_stats(rvi_ts, prefix = "S1_RVI"))
 
-  # Saisonnalité radar
   n <- length(vv_ts)
   if (n >= 4) {
     q1 <- 1:floor(n/4)
@@ -883,7 +813,7 @@ calc_s1_temporal_features <- function(vv_ts, vh_ts) {
 
 `%||%` <- function(x, y) if (is.null(x)) y else x
 
-cli::cli_alert_success("Module de téléchargement satellite chargé")
+cli::cli_alert_success("Module de téléchargement satellite chargé (rstac)")
 cli::cli_text("Utilisation :")
 cli::cli_text('  {.code download_satellite_data("aoi.gpkg", year = 2023)}')
 cli::cli_text('  {.code download_s2_for_aoi(aoi, year = 2023)}')

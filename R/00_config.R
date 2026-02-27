@@ -38,8 +38,11 @@ required_packages <- c(
   # Parallélisme
   "future", "future.apply", "furrr",
 
+  # STAC / téléchargement satellite
+  "rstac", "httr2",
+
   # Utilitaires
-  "here", "glue", "cli", "jsonlite", "httr2", "yaml"
+  "here", "glue", "cli", "jsonlite", "yaml"
 )
 
 install_if_missing <- function(pkgs) {

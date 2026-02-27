@@ -25,49 +25,41 @@ source(file.path(here::here(), "R", "09_python_bridge.R"))
 # 1. TÉLÉCHARGEMENT DES SÉRIES TEMPORELLES SENTINEL-2 SUR L'AOI
 # ==============================================================================
 
-#' Recherche et téléchargement des images Sentinel-2 couvrant une AOI
-#' via l'API STAC de Copernicus Data Space Ecosystem (CDSE)
+#' Recherche des images Sentinel-2 couvrant une AOI via rstac
 #'
 #' @param aoi sf object — polygone de la zone d'intérêt
 #' @param year Année d'analyse
 #' @param max_cloud Couverture nuageuse max par scène (%)
 #' @param output_dir Répertoire de sortie pour les images
-#' @param token Token d'accès CDSE (NULL = recherche seule, pas de download)
 #' @return Liste avec les métadonnées des scènes et les URLs de téléchargement
 search_s2_for_aoi <- function(aoi, year = 2021, max_cloud = 30,
                                output_dir = file.path(RAW_DIR, "sentinel2")) {
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
-  # Reprojection en WGS84 pour la requête STAC
   aoi_wgs84 <- sf::st_transform(aoi, 4326)
   bbox <- as.numeric(sf::st_bbox(aoi_wgs84))
 
-  log_msg("Recherche Sentinel-2 L2A sur l'AOI")
+  log_msg("Recherche Sentinel-2 L2A sur l'AOI (rstac)")
   log_msg("  Bbox : [{round(bbox[1],4)}, {round(bbox[2],4)}, {round(bbox[3],4)}, {round(bbox[4],4)}]")
   log_msg("  Période : {year}-01-01 → {year}-12-31")
   log_msg("  Nuages max : {max_cloud}%")
 
   start_date <- paste0(year, "-01-01")
   end_date   <- paste0(year, "-12-31")
+  datetime_str <- paste0(start_date, "T00:00:00Z/", end_date, "T23:59:59Z")
 
-  # Requête STAC sur Copernicus Data Space
   stac_url <- "https://catalogue.dataspace.copernicus.eu/stac"
 
-  body <- list(
-    collections = list("sentinel-2-l2a"),
-    bbox = as.list(bbox),
-    datetime = paste0(start_date, "T00:00:00Z/", end_date, "T23:59:59Z"),
-    limit = 500,
-    query = list(
-      `eo:cloud_cover` = list(lte = max_cloud)
-    )
-  )
-
-  resp <- tryCatch({
-    httr2::request(paste0(stac_url, "/search")) |>
-      httr2::req_body_json(body) |>
-      httr2::req_timeout(30) |>
-      httr2::req_perform()
+  items <- tryCatch({
+    rstac::stac(stac_url) |>
+      rstac::stac_search(
+        collections = "sentinel-2-l2a",
+        bbox        = bbox,
+        datetime    = datetime_str,
+        limit       = 500
+      ) |>
+      rstac::ext_query(`eo:cloud_cover` = list(`lte` = max_cloud)) |>
+      rstac::post_request()
   }, error = function(e) {
     cli::cli_alert_danger("Erreur STAC : {e$message}")
     cli::cli_text("Vérifiez votre connexion internet.")
@@ -75,17 +67,16 @@ search_s2_for_aoi <- function(aoi, year = 2021, max_cloud = 30,
     return(NULL)
   })
 
-  if (is.null(resp)) return(NULL)
+  if (is.null(items) || length(items$features) == 0) {
+    log_msg("  Aucune scène S2 trouvée", level = "warning")
+    return(NULL)
+  }
 
-  items <- httr2::resp_body_json(resp)
   n_items <- length(items$features)
   log_msg("  {n_items} scènes trouvées", level = "success")
 
-  if (n_items == 0) return(NULL)
-
   # Extraction des métadonnées et assets
   scenes <- lapply(items$features, function(feat) {
-    # URLs des bandes
     assets <- feat$assets
     band_urls <- list()
     for (band_name in names(assets)) {
@@ -105,7 +96,6 @@ search_s2_for_aoi <- function(aoi, year = 2021, max_cloud = 30,
     )
   })
 
-  # Tri par date
   dates <- sapply(scenes, function(s) as.character(s$date))
   scenes <- scenes[order(dates)]
 
@@ -457,10 +447,9 @@ build_species_raster <- function(predictions, pixel_features) {
 #' Pipeline complet de prédiction sur une zone d'intérêt
 #'
 #' @param aoi_path Chemin vers le fichier GeoPackage (ou Shapefile) de l'AOI
-#' @param s2_dir Répertoire contenant les images Sentinel-2 L2A (NULL = auto-download ou démo)
+#' @param s2_dir Répertoire contenant les images Sentinel-2 L2A (NULL = auto-download)
 #' @param s1_dir Répertoire contenant les images Sentinel-1 GRD (NULL = optionnel)
-#' @param model_path Chemin vers le modèle pré-entraîné (.rds)
-#'                   NULL = entraîner un nouveau modèle sur données synthétiques
+#' @param model_path Chemin vers le modèle pré-entraîné (.rds ou .pt)
 #' @param year Année d'analyse
 #' @param output_dir Répertoire de sortie
 #' @param resolution Résolution cible en mètres
@@ -553,37 +542,14 @@ predict_species_map <- function(aoi_path,
       log_msg("  Modèle ranger chargé depuis {model_path}", level = "success")
       log_msg("  Classes : {model$n_classes} espèces")
     } else {
-      log_msg("  Aucun modèle pré-entraîné → entraînement sur données synthétiques")
-      log_msg("  (Pour de meilleurs résultats, entraînez d'abord sur des données IFN)")
-
-      source(file.path(here::here(), "R", "03_data_acquisition.R"))
-
-      # Générer le dataset d'entraînement
-      TS_PARAMS$year       <<- year
-      TS_PARAMS$start_date <<- paste0(year, "-01-01")
-      TS_PARAMS$end_date   <<- paste0(year, "-12-31")
-
-      ts_synth <- generate_synthetic_dataset(n_samples_per_species = 100, year = year)
-      ts_synth <- ts_synth |>
-        dplyr::mutate(
-          NDVI   = calc_ndvi(B08, B04),
-          EVI    = calc_evi(B08, B04, B02),
-          NDWI   = calc_ndwi(B08, B11),
-          CRI    = calc_cri(B03, B05),
-          RENDVI = calc_rendvi(B08, B05),
-          NBR    = calc_nbr(B08, B12)
-        )
-
-      feature_matrix <- build_feature_matrix(ts_synth)
-      feature_cols <- select_features(feature_matrix)
-
-      model <- train_random_forest(feature_matrix, feature_cols, target_col = "species_name")
-
-      # Sauvegarder le modèle
-      dir.create(MODELS_DIR, showWarnings = FALSE, recursive = TRUE)
-      model_save_path <- file.path(MODELS_DIR, "treesatai_rf_synthetic.rds")
-      saveRDS(model, model_save_path)
-      log_msg("  Modèle sauvegardé : {model_save_path}", level = "success")
+      cli::cli_alert_danger("Aucun modèle pré-entraîné trouvé.")
+      cli::cli_text("")
+      cli::cli_text("Entraînez d'abord un modèle avec le pipeline :")
+      cli::cli_text("  {.code Rscript R/06_pipeline.R --data /chemin/vers/donnees}")
+      cli::cli_text("")
+      cli::cli_text("Puis relancez avec :")
+      cli::cli_text('  {.code predict_species_map("{aoi_path}", model_path = "output/models/treesatai_rf.rds")}')
+      stop("Modèle requis. Entraînez-en un d'abord avec 06_pipeline.R")
     }
   }
 
@@ -632,17 +598,15 @@ predict_species_map <- function(aoi_path,
         s1_cube <- build_s1_cube(s1_bands_dir, aoi, year, resolution)
       }
     } else {
-      cli::cli_alert_danger("Téléchargement S2 échoué — passage en mode démo")
-      cube_result <- generate_demo_cube(aoi, year = year, resolution = resolution)
-      cube_list <- cube_result$cube
-      dates     <- cube_result$dates
+      cli::cli_alert_danger("Téléchargement S2 échoué")
+      cli::cli_text("Vérifiez vos identifiants CDSE et votre connexion internet.")
+      return(NULL)
     }
 
   } else {
-    # --- Mode interactif : proposer les options ---
-    cli::cli_alert_info("Pas de données satellite locales fournies.")
+    cli::cli_alert_danger("Pas de données satellite.")
     cli::cli_text("")
-    cli::cli_text("3 options disponibles :")
+    cli::cli_text("Deux options :")
     cli::cli_text("")
     cli::cli_h3("Option A : Données locales")
     cli::cli_text('  predict_species_map("{aoi_path}", s2_dir = "/chemin/vers/S2/")')
@@ -651,38 +615,7 @@ predict_species_map <- function(aoi_path,
     cli::cli_text('  predict_species_map("{aoi_path}", auto_download = TRUE, year = {year})')
     cli::cli_text('  # Avec Sentinel-1 (radar) en plus :')
     cli::cli_text('  predict_species_map("{aoi_path}", auto_download = TRUE, use_s1 = TRUE)')
-    cli::cli_text("")
-    cli::cli_h3("Option C : Mode démonstration")
-    cli::cli_text("  Données synthétiques sur votre AOI pour tester le pipeline")
-    cli::cli_text("")
-
-    if (interactive()) {
-      # Rechercher d'abord les scènes disponibles
-      scenes <- search_s2_for_aoi(aoi, year = year, max_cloud = 30)
-      if (!is.null(scenes)) {
-        cli::cli_alert_info("{length(scenes)} scènes S2 disponibles pour {year} sur votre zone")
-      }
-
-      cli::cli_text("")
-      response <- readline("Choix (a=local / b=télécharger / c=démo) : ")
-
-      if (tolower(response) == "b") {
-        # Relancer en mode téléchargement
-        return(predict_species_map(
-          aoi_path = aoi_path, model_path = model_path,
-          year = year, output_dir = output_dir, resolution = resolution,
-          auto_download = TRUE, use_s1 = use_s1
-        ))
-      } else if (tolower(response) != "c") {
-        log_msg("Pipeline interrompu. Relancez avec s2_dir ou auto_download.", level = "warning")
-        return(NULL)
-      }
-    }
-
-    # Mode démonstration
-    cube_result <- generate_demo_cube(aoi, year = year, resolution = resolution)
-    cube_list <- cube_result$cube
-    dates     <- cube_result$dates
+    stop("Fournissez s2_dir ou utilisez auto_download = TRUE")
   }
 
   # --- 4. Extraction des features ---
@@ -874,185 +807,6 @@ extract_s1_pixel_features <- function(s1_cube, pixel_features) {
 # ==============================================================================
 # 4. FONCTIONS AUXILIAIRES
 # ==============================================================================
-
-#' Génération d'un cube synthétique sur l'AOI (mode démonstration)
-#'
-#' Simule des images Sentinel-2 avec des patches d'espèces différentes
-#' pour permettre de tester le pipeline sans données réelles.
-#'
-#' @param aoi sf object
-#' @param year Année
-#' @param resolution Résolution en mètres
-#' @param n_dates Nombre de dates simulées
-#' @return Liste avec cube et dates
-generate_demo_cube <- function(aoi, year = 2021, resolution = 10, n_dates = 36) {
-  log_msg("Génération du cube Sentinel-2 de démonstration")
-
-  aoi_proj <- sf::st_transform(aoi, 2154)
-  aoi_vect <- terra::vect(aoi_proj)
-  aoi_ext  <- terra::ext(aoi_vect)
-
-  # Créer une grille de pixels
-  template <- terra::rast(aoi_ext, resolution = resolution, crs = "EPSG:2154")
-  template <- terra::mask(template, aoi_vect)
-
-  n_rows <- terra::nrow(template)
-  n_cols <- terra::ncol(template)
-  n_pixels <- n_rows * n_cols
-
-  log_msg("  Grille : {n_rows} × {n_cols} = {n_pixels} pixels à {resolution}m")
-
-  # Dates simulées (environ tous les 10 jours)
-  dates <- seq.Date(
-    as.Date(paste0(year, "-01-01")),
-    as.Date(paste0(year, "-12-31")),
-    length.out = n_dates
-  )
-
-  # Créer des "patches" d'espèces spatialement cohérents
-  set.seed(42)
-
-  # Assigner une espèce à chaque pixel (par patches Voronoi)
-  n_patches <- min(40, n_pixels %/% 10)
-  xy <- terra::xyFromCell(template, 1:n_pixels)
-  valid_cells <- which(!is.na(terra::values(terra::mask(
-    terra::setValues(template, 1), aoi_vect))))
-
-  if (length(valid_cells) == 0) {
-    # Si aucun pixel valide après masque, utiliser tous les pixels
-    valid_cells <- 1:n_pixels
-  }
-
-  # Centres de patches aléatoires
-  center_cells <- sample(valid_cells, min(n_patches, length(valid_cells)))
-  center_xy <- xy[center_cells, , drop = FALSE]
-
-  # Espèce aléatoire par patch
-  patch_species <- sample(1:20, length(center_cells), replace = TRUE)
-
-  # Assigner chaque pixel au patch le plus proche
-  pixel_species <- rep(NA_integer_, n_pixels)
-  for (cell in valid_cells) {
-    dists <- sqrt((xy[cell, 1] - center_xy[, 1])^2 + (xy[cell, 2] - center_xy[, 2])^2)
-    pixel_species[cell] <- patch_species[which.min(dists)]
-  }
-
-  # Générer les séries temporelles par espèce
-  log_msg("  Simulation des séries temporelles...")
-
-  cube_list <- list()
-
-  for (d in seq_along(dates)) {
-    current_date <- dates[d]
-    doy <- as.numeric(format(current_date, "%j"))
-    bands_rasters <- list()
-
-    for (band in S2_BAND_NAMES) {
-      vals <- rep(NA_real_, n_pixels)
-
-      for (cell in valid_cells) {
-        sp_code <- pixel_species[cell]
-        if (is.na(sp_code)) next
-
-        sp <- SPECIES[sp_code, ]
-
-        # Simuler la valeur spectrale à cette date
-        # NDVI synthétique pour cette espèce et ce DOY
-        ndvi_val <- simulate_single_ndvi(sp_code, doy)
-
-        # Dériver la valeur de la bande depuis le NDVI
-        vals[cell] <- derive_band_from_ndvi(ndvi_val, band, sp_code)
-      }
-
-      r <- terra::rast(template)
-      terra::values(r) <- vals
-      names(r) <- paste0(band, "_", format(current_date, "%Y%m%d"))
-      bands_rasters[[band]] <- r
-    }
-
-    cube_list[[as.character(current_date)]] <- terra::rast(bands_rasters)
-  }
-
-  log_msg("  Cube de démonstration : {length(dates)} dates × {length(S2_BAND_NAMES)} bandes",
-          level = "success")
-
-  # Sauvegarder la carte de vérité terrain
-  truth_rast <- terra::rast(template)
-  terra::values(truth_rast) <- pixel_species
-  names(truth_rast) <- "true_species"
-  levels_df <- data.frame(value = 1:20, species = SPECIES$french)
-  levels(truth_rast) <- levels_df
-
-  list(cube = cube_list, dates = dates, ground_truth = truth_rast)
-}
-
-#' Simuler une valeur NDVI pour une espèce à un DOY donné
-simulate_single_ndvi <- function(species_code, doy) {
-  sp <- SPECIES[species_code, ]
-
-  if (sp$phenologie == "sempervirent") {
-    base <- switch(as.character(species_code),
-      "4"  = 0.65,  # Chêne vert
-      "13" = 0.55,  # Épicéa
-      "14" = 0.58,  # Sapin
-      "15" = 0.60,  # Douglas
-      "16" = 0.50,  # Pin sylvestre
-      "17" = 0.52,  # Pin maritime
-      "18" = 0.48,  # Pin noir
-      "19" = 0.45,  # Pin d'Alep
-      0.55
-    )
-    ndvi <- base + 0.08 * sin(2 * pi * doy / 365)
-  } else {
-    params <- switch(sp$french,
-      "Chêne pédonculé"      = list(min = 0.20, max = 0.82, sos = 100, eos = 300),
-      "Chêne sessile"        = list(min = 0.22, max = 0.80, sos = 105, eos = 295),
-      "Chêne pubescent"      = list(min = 0.18, max = 0.78, sos = 95,  eos = 305),
-      "Hêtre"                = list(min = 0.15, max = 0.85, sos = 110, eos = 290),
-      "Châtaignier"          = list(min = 0.18, max = 0.83, sos = 105, eos = 295),
-      "Charme"               = list(min = 0.17, max = 0.80, sos = 100, eos = 300),
-      "Bouleau verruqueux"   = list(min = 0.12, max = 0.78, sos = 90,  eos = 280),
-      "Frêne commun"         = list(min = 0.15, max = 0.76, sos = 115, eos = 285),
-      "Érable sycomore"      = list(min = 0.16, max = 0.79, sos = 100, eos = 290),
-      "Peupliers"            = list(min = 0.13, max = 0.81, sos = 95,  eos = 275),
-      "Robinier faux-acacia" = list(min = 0.14, max = 0.77, sos = 120, eos = 270),
-      "Mélèze d'Europe"      = list(min = 0.10, max = 0.72, sos = 115, eos = 305),
-      list(min = 0.15, max = 0.80, sos = 100, eos = 295)
-    )
-    amp <- params$max - params$min
-    greenup    <- 1 / (1 + exp(-0.08 * (doy - params$sos)))
-    senescence <- 1 / (1 + exp(0.06 * (doy - params$eos)))
-    ndvi <- params$min + amp * greenup * senescence
-  }
-
-  # Petit bruit
-  ndvi <- ndvi + rnorm(1, 0, 0.02)
-  pmax(0, pmin(1, ndvi))
-}
-
-#' Dériver une valeur de bande spectrale à partir du NDVI (approximation)
-derive_band_from_ndvi <- function(ndvi, band, species_code) {
-  set.seed(species_code * 100 + as.integer(chartr("BA", "00", band)))
-
-  nir <- 0.3 + 0.4 * ndvi + rnorm(1, 0, 0.01)
-  red <- nir * (1 - ndvi) / (1 + ndvi + 1e-6)
-
-  val <- switch(band,
-    "B02" = red * runif(1, 0.7, 0.9),     # Blue
-    "B03" = (red + nir) / 3,               # Green
-    "B04" = red,                            # Red
-    "B05" = (red + nir) / 2 * 0.9,         # RedEdge1
-    "B06" = (red + nir) / 2 * 0.95 + 0.02, # RedEdge2
-    "B07" = nir * 0.95,                    # RedEdge3
-    "B08" = nir,                            # NIR
-    "B8A" = nir * 0.92,                    # NIR2
-    "B11" = 0.2 - 0.1 * ndvi,             # SWIR1
-    "B12" = 0.15 - 0.08 * ndvi,           # SWIR2
-    nir
-  )
-
-  pmax(0, val + rnorm(1, 0, 0.005))
-}
 
 #' Calcul des statistiques de la carte classifiée
 compute_map_statistics <- function(predictions, rasters) {

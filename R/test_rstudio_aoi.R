@@ -77,7 +77,7 @@ install_if_needed <- function(pkgs) {
 }
 
 install_if_needed(c(
-  "sf", "terra", "here", "cli", "glue", "httr2",
+  "sf", "terra", "here", "cli", "glue", "httr2", "rstac",
   "dplyr", "tidyr", "purrr", "readr", "stringr", "lubridate",
   "ggplot2", "patchwork", "viridis", "RColorBrewer", "pheatmap",
   "ranger", "signal", "pracma", "jsonlite", "data.table", "scales"
