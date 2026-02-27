@@ -5,9 +5,8 @@
 # par séries temporelles Sentinel-2 annuelles
 #
 # Usage :
-#   Rscript R/06_pipeline.R                        # Mode synthétique (démo)
 #   Rscript R/06_pipeline.R --data /chemin/dataset  # Données réelles
-#   Rscript R/06_pipeline.R --mode cnn              # Avec CNN temporel
+#   Rscript R/06_pipeline.R --data /chemin --mode cnn  # Avec CNN temporel
 # ==============================================================================
 
 # --- Chargement des modules ---------------------------------------------------
@@ -23,13 +22,11 @@ args <- commandArgs(trailingOnly = TRUE)
 
 DATA_PATH   <- NULL
 MODE        <- "rf"       # "rf" ou "cnn"
-N_SAMPLES   <- 50         # Échantillons par espèce (mode synthétique)
 SKIP_VIZ    <- FALSE
 
 for (i in seq_along(args)) {
   if (args[i] == "--data" && i < length(args))    DATA_PATH <- args[i + 1]
   if (args[i] == "--mode" && i < length(args))    MODE      <- args[i + 1]
-  if (args[i] == "--samples" && i < length(args)) N_SAMPLES <- as.integer(args[i + 1])
   if (args[i] == "--no-viz")                       SKIP_VIZ  <- TRUE
 }
 
@@ -79,30 +76,17 @@ if (!is.null(DATA_PATH)) {
   }
 
 } else {
-  # ---- Mode synthétique (démo) ----
-  cli::cli_alert_info("Mode démonstration — Génération de données synthétiques")
-  cli::cli_text("  {nrow(SPECIES)} espèces × {N_SAMPLES} échantillons chacune")
+  cli::cli_alert_danger("Aucun répertoire de données spécifié.")
   cli::cli_text("")
-
-  ts_long <- generate_synthetic_dataset(n_samples_per_species = N_SAMPLES,
-                                         year = TS_PARAMS$year)
-
-  # Ajouter les indices spectraux directement
-  cli::cli_alert_info("Calcul des indices spectraux...")
-  ts_long <- ts_long |>
-    dplyr::mutate(
-      NDVI   = calc_ndvi(B08, B04),
-      EVI    = calc_evi(B08, B04, B02),
-      NDWI   = calc_ndwi(B08, B11),
-      CRI    = calc_cri(B03, B05),
-      RENDVI = calc_rendvi(B08, B05),
-      NBR    = calc_nbr(B08, B12)
-    )
-
-  # Sauvegarder les données brutes
-  ts_path <- file.path(TS_DIR, "treesatai_ts_synthetic.csv")
-  readr::write_csv(ts_long, ts_path)
-  cli::cli_alert_success("Données synthétiques sauvegardées : {ts_path}")
+  cli::cli_text("Usage :")
+  cli::cli_text("  Rscript R/06_pipeline.R --data /chemin/vers/donnees")
+  cli::cli_text("")
+  cli::cli_text("Le répertoire doit contenir :")
+  cli::cli_ul()
+  cli::cli_li("Un fichier vectoriel (.gpkg, .shp) avec les parcelles et espèces")
+  cli::cli_li("Des séries temporelles (.csv) ou des images Sentinel-2 brutes")
+  cli::cli_end()
+  stop("Argument --data obligatoire. Pas de données, pas de pipeline.")
 }
 
 # ==============================================================================
@@ -239,7 +223,7 @@ cli::cli_h2("Étape 6 — Validation croisée")
 
 cv_results <- cross_validate(feature_matrix, feature_cols,
                               k = CLASSIF_PARAMS$cv_folds,
-                              repeats = 1)  # 1 répétition pour la démo
+                              repeats = CLASSIF_PARAMS$cv_repeats)
 
 readr::write_csv(cv_results$results, file.path(OUTPUT_DIR, "cv_results.csv"))
 

@@ -1,17 +1,19 @@
 #!/usr/bin/env Rscript
 # ==============================================================================
-# TreeSatAI-Time-Series — Script de test interactif pour RStudio
+# TreeSatAI-Time-Series — Script interactif pour RStudio
 #
 # OBJECTIF : Donner un fichier aoi.gpkg → obtenir la carte des essences
 #
 # COMMENT UTILISER :
 #   1. Ouvrir le projet dans RStudio (File > Open Project)
-#   2. Modifier AOI_PATH ci-dessous (ligne 19)
-#   3. Exécuter bloc par bloc avec Ctrl+Enter (ou Ctrl+Shift+Enter par bloc)
+#   2. Modifier AOI_PATH ci-dessous
+#   3. Configurer vos identifiants CDSE (voir ci-dessous)
+#   4. Exécuter bloc par bloc avec Ctrl+Enter (ou Ctrl+Shift+Enter par bloc)
 #
-# DEUX MODES :
-#   A. RAPIDE (démo)  → données synthétiques, pas besoin d'images satellite
-#   B. RÉEL           → images Sentinel-2 locales, résultats exploitables
+# MODES DISPONIBLES :
+#   - "download" (défaut) → télécharge S2 (+S1) depuis Copernicus CDSE
+#   - "local"             → images Sentinel déjà téléchargées sur disque
+#   - "pytorch"           → utilise un modèle Deep Learning (TempCNN, etc.)
 # ==============================================================================
 
 # ==============================================================================
@@ -23,20 +25,17 @@ AOI_PATH <- "~/mon_projet/aoi.gpkg"
 
 # ----- MODE DE FONCTIONNEMENT (décommenter UN seul mode) -----
 
-# MODE 1 : Démonstration (données synthétiques, pas besoin de satellite)
-MODE <- "demo"
-
-# MODE 2 : Téléchargement automatique S2 (+S1) depuis Copernicus
+# MODE 1 (défaut) : Téléchargement automatique S2 (+S1) depuis Copernicus
 #   Nécessite un compte gratuit sur https://dataspace.copernicus.eu
 #   Configurer dans ~/.Renviron :
 #     CDSE_USERNAME=votre@email.com
 #     CDSE_PASSWORD=motdepasse
-# MODE <- "download"
+MODE <- "download"
 
-# MODE 3 : Données locales (vous avez déjà les images)
+# MODE 2 : Données locales (vous avez déjà les images)
 # MODE <- "local"
 
-# MODE 4 : PyTorch (utilise un modèle DL au lieu de Random Forest)
+# MODE 3 : PyTorch (utilise un modèle DL au lieu de Random Forest)
 #   Nécessite : conda activate treesat (ou setup_python_env() depuis R)
 # MODE <- "pytorch"
 
@@ -171,14 +170,10 @@ if (MODE == "download") {
   )
 
 } else {
-  # --- Mode démo (défaut) ---
-  result <- predict_species_map(
-    aoi_path   = AOI_PATH,
-    model_path = MODEL_PATH,
-    year       = YEAR,
-    output_dir = file.path(here::here(), "output"),
-    resolution = RESOLUTION
-  )
+  stop(paste0(
+    "Mode '", MODE, "' non reconnu.\n",
+    "Modes valides : 'download', 'local', 'pytorch'"
+  ))
 }
 
 # ==============================================================================
@@ -290,25 +285,6 @@ cat("  output/legende_especes.csv   — légende des codes\n")
 #   - "transformer" : Transformer encoder — attention sur les dates clés
 #   - "inception"   : InceptionTime — multi-échelle temporelle
 #   - "multisource" : TempCNN fusion S2+S1 (nécessite use_s1 = TRUE)
-
-# ==============================================================================
-# BLOC 7c (optionnel) — Améliorer les résultats avec un vrai modèle ranger
-# ==============================================================================
-
-# Le mode démonstration utilise un modèle entraîné sur données synthétiques.
-# Pour des résultats exploitables :
-#
-# ÉTAPE 1 : Entraîner un modèle sur des données IFN + Sentinel-2 réelles
-#   source("R/06_pipeline.R")  # avec --data pointant vers vos données
-#
-# ÉTAPE 2 : Relancer la prédiction avec le vrai modèle
-#   result <- predict_species_map(
-#     aoi_path      = AOI_PATH,
-#     auto_download = TRUE,
-#     model_path    = "output/models/treesatai_rf.rds",
-#     year          = 2023,
-#     use_s1        = TRUE
-#   )
 
 # ==============================================================================
 # BLOC 8 (optionnel) — Filtrage par confiance
