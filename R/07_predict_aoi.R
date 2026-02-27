@@ -25,13 +25,13 @@ source(file.path(here::here(), "R", "09_python_bridge.R"))
 # 1. TÉLÉCHARGEMENT DES SÉRIES TEMPORELLES SENTINEL-2 SUR L'AOI
 # ==============================================================================
 
-#' Recherche des images Sentinel-2 couvrant une AOI via rstac
+#' Recherche des images Sentinel-2 couvrant une AOI via Planetary Computer
 #'
 #' @param aoi sf object — polygone de la zone d'intérêt
 #' @param year Année d'analyse
 #' @param max_cloud Couverture nuageuse max par scène (%)
 #' @param output_dir Répertoire de sortie pour les images
-#' @return Liste avec les métadonnées des scènes et les URLs de téléchargement
+#' @return Liste avec les métadonnées des scènes
 search_s2_for_aoi <- function(aoi, year = 2021, max_cloud = 30,
                                output_dir = file.path(RAW_DIR, "sentinel2")) {
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
@@ -39,70 +39,31 @@ search_s2_for_aoi <- function(aoi, year = 2021, max_cloud = 30,
   aoi_wgs84 <- sf::st_transform(aoi, 4326)
   bbox <- as.numeric(sf::st_bbox(aoi_wgs84))
 
-  log_msg("Recherche Sentinel-2 L2A sur l'AOI (rstac)")
+  log_msg("Recherche Sentinel-2 L2A sur l'AOI (Planetary Computer)")
   log_msg("  Bbox : [{round(bbox[1],4)}, {round(bbox[2],4)}, {round(bbox[3],4)}, {round(bbox[4],4)}]")
   log_msg("  Période : {year}-01-01 → {year}-12-31")
   log_msg("  Nuages max : {max_cloud}%")
 
   start_date <- paste0(year, "-01-01")
   end_date   <- paste0(year, "-12-31")
-  datetime_str <- paste0(start_date, "T00:00:00Z/", end_date, "T23:59:59Z")
 
-  stac_url <- "https://catalogue.dataspace.copernicus.eu/stac"
+  search_result <- search_sentinel2(aoi, start_date, end_date, max_cloud)
+  if (is.null(search_result)) return(NULL)
 
-  items <- tryCatch({
-    rstac::stac(stac_url) |>
-      rstac::stac_search(
-        collections = "sentinel-2-l2a",
-        bbox        = bbox,
-        datetime    = datetime_str,
-        limit       = 500
-      ) |>
-      rstac::ext_query(`eo:cloud_cover` = list(`lte` = max_cloud)) |>
-      rstac::post_request()
-  }, error = function(e) {
-    cli::cli_alert_danger("Erreur STAC : {e$message}")
-    cli::cli_text("Vérifiez votre connexion internet.")
-    cli::cli_text("Alternative : placez vos images S2 dans {output_dir}")
-    return(NULL)
-  })
+  scenes_df <- search_result$scenes
+  log_msg("  {nrow(scenes_df)} scènes trouvées", level = "success")
+  log_msg("  Couverture : {min(scenes_df$date)} → {max(scenes_df$date)}")
+  log_msg("  Nuages moyen : {round(mean(scenes_df$cloud_cover, na.rm = TRUE), 1)}%")
 
-  if (is.null(items) || length(items$features) == 0) {
-    log_msg("  Aucune scène S2 trouvée", level = "warning")
-    return(NULL)
-  }
-
-  n_items <- length(items$features)
-  log_msg("  {n_items} scènes trouvées", level = "success")
-
-  # Extraction des métadonnées et assets
-  scenes <- lapply(items$features, function(feat) {
-    assets <- feat$assets
-    band_urls <- list()
-    for (band_name in names(assets)) {
-      if (grepl("B02|B03|B04|B05|B06|B07|B08|B8A|B11|B12|SCL", band_name)) {
-        band_urls[[band_name]] <- assets[[band_name]]$href
-      }
-    }
-
+  # Retourner la liste pour compatibilité avec le reste du pipeline
+  lapply(seq_len(nrow(scenes_df)), function(i) {
     list(
-      id          = feat$id,
-      datetime    = feat$properties$datetime,
-      date        = as.Date(substr(feat$properties$datetime, 1, 10)),
-      cloud_cover = feat$properties$`eo:cloud_cover`,
-      platform    = feat$properties$platform,
-      band_urls   = band_urls,
-      bbox        = feat$bbox
+      id          = scenes_df$id[i],
+      date        = scenes_df$date[i],
+      cloud_cover = scenes_df$cloud_cover[i],
+      platform    = scenes_df$platform[i]
     )
   })
-
-  dates <- sapply(scenes, function(s) as.character(s$date))
-  scenes <- scenes[order(dates)]
-
-  log_msg("  Couverture temporelle : {min(dates)} → {max(dates)}")
-  log_msg("  Nuages moyen : {round(mean(sapply(scenes, function(s) s$cloud_cover)), 1)}%")
-
-  scenes
 }
 
 #' Construction d'un cube raster spatio-temporel à partir d'images locales S2
@@ -569,10 +530,8 @@ predict_species_map <- function(aoi_path,
     dates <- as.Date(names(cube_list))
 
   } else if (auto_download) {
-    # --- Mode téléchargement automatique ---
-    cli::cli_h3("Téléchargement automatique des données satellite")
-    cli::cli_text("Compte CDSE requis : https://dataspace.copernicus.eu")
-    cli::cli_text("")
+    # --- Mode téléchargement automatique via Planetary Computer (gratuit) ---
+    cli::cli_h3("Téléchargement automatique (Planetary Computer — sans authentification)")
 
     sat_data <- download_satellite_data(
       aoi_path    = aoi_path,
@@ -584,7 +543,6 @@ predict_species_map <- function(aoi_path,
     )
 
     if (!is.null(sat_data$s2_dir)) {
-      # Chercher le sous-dossier "bands" créé par extract_s2_bands
       s2_bands_dir <- file.path(sat_data$s2_dir, "bands")
       if (!dir.exists(s2_bands_dir)) s2_bands_dir <- sat_data$s2_dir
 
@@ -592,14 +550,15 @@ predict_species_map <- function(aoi_path,
                                   year = year, resolution = resolution)
       dates <- as.Date(names(cube_list))
 
-      # Sentinel-1 si disponible
+      # Sentinel-1 RTC : déjà en dB, pas besoin de preprocess_s1()
       if (use_s1 && !is.null(sat_data$s1_dir)) {
-        s1_bands_dir <- preprocess_s1(sat_data$s1_dir, aoi, resolution)
+        s1_bands_dir <- file.path(sat_data$s1_dir, "bands")
+        if (!dir.exists(s1_bands_dir)) s1_bands_dir <- sat_data$s1_dir
         s1_cube <- build_s1_cube(s1_bands_dir, aoi, year, resolution)
       }
     } else {
       cli::cli_alert_danger("Téléchargement S2 échoué")
-      cli::cli_text("Vérifiez vos identifiants CDSE et votre connexion internet.")
+      cli::cli_text("Vérifiez votre connexion internet.")
       return(NULL)
     }
 
@@ -611,7 +570,7 @@ predict_species_map <- function(aoi_path,
     cli::cli_h3("Option A : Données locales")
     cli::cli_text('  predict_species_map("{aoi_path}", s2_dir = "/chemin/vers/S2/")')
     cli::cli_text("")
-    cli::cli_h3("Option B : Téléchargement automatique (compte CDSE)")
+    cli::cli_h3("Option B : Téléchargement automatique (gratuit, sans compte)")
     cli::cli_text('  predict_species_map("{aoi_path}", auto_download = TRUE, year = {year})')
     cli::cli_text('  # Avec Sentinel-1 (radar) en plus :')
     cli::cli_text('  predict_species_map("{aoi_path}", auto_download = TRUE, use_s1 = TRUE)')
