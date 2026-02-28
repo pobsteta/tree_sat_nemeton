@@ -699,13 +699,14 @@ predict_species_map <- function(aoi_path,
 
   # Raster GeoTIFF
   tif_path <- file.path(output_dir, "carte_essences.tif")
-  terra::writeRaster(rasters$species, tif_path, overwrite = TRUE,
-                     datatype = "INT1U")
+  if (file.exists(tif_path)) file.remove(tif_path)
+  terra::writeRaster(rasters$species, tif_path, datatype = "INT1U")
   log_msg("  Raster espèces  : {tif_path}", level = "success")
 
   # Raster confiance
   proba_path <- file.path(output_dir, "carte_confiance.tif")
-  terra::writeRaster(rasters$confidence, proba_path, overwrite = TRUE)
+  if (file.exists(proba_path)) file.remove(proba_path)
+  terra::writeRaster(rasters$confidence, proba_path)
   log_msg("  Raster confiance : {proba_path}", level = "success")
 
   # Vectoriser le raster (polygones par espèce)
