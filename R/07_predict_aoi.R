@@ -142,7 +142,10 @@ build_s2_cube <- function(s2_dir, aoi, bands = S2_BAND_NAMES,
     }
 
     if (length(band_stack) == length(bands)) {
-      cube_list[[as.character(current_date)]] <- terra::rast(band_stack)
+      stacked <- terra::rast(band_stack)
+      # terra::rast() peut perdre les noms custom → les remettre
+      names(stacked) <- paste0(bands, "_", format(current_date, "%Y%m%d"))
+      cube_list[[as.character(current_date)]] <- stacked
     }
   }
 
@@ -189,7 +192,7 @@ extract_pixel_features <- function(cube_list, dates, block_size = 100) {
   for (band in bands) {
     band_mat <- matrix(NA_real_, nrow = n_pixels, ncol = n_dates)
     for (d in seq_len(n_dates)) {
-      layer_name <- grep(paste0("^", band, "_"), names(cube_list[[d]]), value = TRUE)
+      layer_name <- grep(paste0("^", band, "(_|$)"), names(cube_list[[d]]), value = TRUE)
       if (length(layer_name) > 0) {
         vals <- terra::values(cube_list[[d]][[layer_name[1]]])
         band_mat[, d] <- as.numeric(vals)

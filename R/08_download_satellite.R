@@ -369,8 +369,19 @@ download_s1_bands <- function(items_signed, selected_ids, aoi, bands_dir) {
 #' @return Chemin vers le répertoire des données
 download_s2_for_aoi <- function(aoi, year = 2021, max_cloud = 30,
                                  output_dir = file.path(RAW_DIR, "sentinel2"),
-                                 max_scenes = NULL) {
+                                 max_scenes = NULL, confirm = FALSE) {
   cli::cli_h2("Téléchargement Sentinel-2 L2A (Planetary Computer)")
+
+  s2_dir    <- file.path(output_dir, paste0("S2_L2A_", year))
+  bands_dir <- file.path(s2_dir, "bands")
+
+  # Vérifier si les données existent déjà
+  existing <- list.files(bands_dir, pattern = "\\.tif$", full.names = TRUE)
+  if (length(existing) > 0) {
+    log_msg("  {length(existing)} bandes S2 déjà téléchargées dans {bands_dir}", level = "success")
+    log_msg("  Réutilisation des données existantes (supprimez le dossier pour retélécharger)")
+    return(s2_dir)
+  }
 
   start_date <- paste0(year, "-01-01")
   end_date   <- paste0(year, "-12-31")
@@ -390,18 +401,18 @@ download_s2_for_aoi <- function(aoi, year = 2021, max_cloud = 30,
     log_msg("  Limité à {nrow(scenes)} scènes (max_scenes)")
   }
 
-  if (interactive()) {
-    confirm <- readline(glue::glue(
-      "Télécharger {nrow(scenes)} scènes S2 × {length(STAC_CONFIG$s2_bands)} bandes ? (o/n) : "
+  n_bands <- length(STAC_CONFIG$s2_bands)
+  log_msg("  Téléchargement de {nrow(scenes)} scènes × {n_bands} bandes...")
+
+  if (confirm && interactive()) {
+    resp <- readline(glue::glue(
+      "Télécharger {nrow(scenes)} scènes S2 × {n_bands} bandes ? (o/n) : "
     ))
-    if (!tolower(confirm) %in% c("o", "oui", "y", "yes")) {
+    if (!tolower(resp) %in% c("o", "oui", "y", "yes")) {
       log_msg("Téléchargement annulé", level = "warning")
       return(NULL)
     }
   }
-
-  s2_dir    <- file.path(output_dir, paste0("S2_L2A_", year))
-  bands_dir <- file.path(s2_dir, "bands")
 
   download_s2_bands(items_signed, scenes$id, aoi, bands_dir)
 
@@ -416,8 +427,18 @@ download_s2_for_aoi <- function(aoi, year = 2021, max_cloud = 30,
 #' @return Chemin vers le répertoire des données
 download_s1_for_aoi <- function(aoi, year = 2021,
                                  output_dir = file.path(RAW_DIR, "sentinel1"),
-                                 max_scenes = NULL) {
+                                 max_scenes = NULL, confirm = FALSE) {
   cli::cli_h2("Téléchargement Sentinel-1 RTC (Planetary Computer)")
+
+  s1_dir    <- file.path(output_dir, paste0("S1_RTC_", year))
+  bands_dir <- file.path(s1_dir, "bands")
+
+  # Vérifier si les données existent déjà
+  existing <- list.files(bands_dir, pattern = "\\.tif$", full.names = TRUE)
+  if (length(existing) > 0) {
+    log_msg("  {length(existing)} bandes S1 déjà téléchargées dans {bands_dir}", level = "success")
+    return(s1_dir)
+  }
 
   start_date <- paste0(year, "-01-01")
   end_date   <- paste0(year, "-12-31")
@@ -435,18 +456,17 @@ download_s1_for_aoi <- function(aoi, year = 2021,
     scenes <- scenes[1:min(max_scenes, nrow(scenes)), ]
   }
 
-  if (interactive()) {
-    confirm <- readline(glue::glue(
+  log_msg("  Téléchargement de {nrow(scenes)} scènes S1 (VV + VH)...")
+
+  if (confirm && interactive()) {
+    resp <- readline(glue::glue(
       "Télécharger {nrow(scenes)} scènes S1 (VV + VH) ? (o/n) : "
     ))
-    if (!tolower(confirm) %in% c("o", "oui", "y", "yes")) {
+    if (!tolower(resp) %in% c("o", "oui", "y", "yes")) {
       log_msg("Téléchargement S1 annulé", level = "warning")
       return(NULL)
     }
   }
-
-  s1_dir    <- file.path(output_dir, paste0("S1_RTC_", year))
-  bands_dir <- file.path(s1_dir, "bands")
 
   download_s1_bands(items_signed, scenes$id, aoi, bands_dir)
 
