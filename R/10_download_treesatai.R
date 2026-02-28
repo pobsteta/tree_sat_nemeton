@@ -92,6 +92,66 @@ HF_RESOLVE_BASE <- "https://huggingface.co/datasets"
   return(FALSE)
 }
 
+# Extraction de zip avec barre de progression
+.unzip_with_progress <- function(zip_path, exdir) {
+  zip_name <- basename(zip_path)
+  zip_mb   <- round(file.info(zip_path)$size / 1024 / 1024, 1)
+
+  # Lister le contenu du zip
+  file_list <- tryCatch(
+    unzip(zip_path, list = TRUE),
+    error = function(e) {
+      cli::cli_alert_danger("Impossible de lire {zip_name} : {e$message}")
+      return(NULL)
+    }
+  )
+  if (is.null(file_list)) return(invisible(FALSE))
+
+  n_files   <- nrow(file_list)
+  total_mb  <- round(sum(file_list$Length) / 1024 / 1024, 1)
+
+  cli::cli_alert_info("Extraction : {zip_name} ({zip_mb} Mo) \u2192 {n_files} fichiers ({total_mb} Mo)")
+
+  # Pour les petits zips (< 500 fichiers), extraire d'un coup
+  if (n_files <= 500) {
+    tryCatch({
+      unzip(zip_path, exdir = exdir)
+      cli::cli_alert_success("  {zip_name} extrait ({n_files} fichiers)")
+      return(invisible(TRUE))
+    }, error = function(e) {
+      cli::cli_alert_danger("  Echec : {e$message}")
+      return(invisible(FALSE))
+    })
+  }
+
+  # Pour les gros zips, extraire par lots avec progression
+  batch_size <- max(100, n_files %/% 50)
+  batches    <- split(file_list$Name, ceiling(seq_len(n_files) / batch_size))
+  n_batches  <- length(batches)
+  extracted  <- 0L
+
+  cli::cli_progress_bar(
+    format = "  Extraction {cli::pb_bar} {cli::pb_percent} | {extracted}/{n_files} fichiers",
+    total = n_files
+  )
+
+  for (batch in batches) {
+    tryCatch({
+      unzip(zip_path, files = batch, exdir = exdir, overwrite = TRUE)
+      extracted <- extracted + length(batch)
+      cli::cli_progress_update(set = extracted)
+    }, error = function(e) {
+      cli::cli_alert_warning("  Erreur sur un lot : {e$message}")
+      extracted <<- extracted + length(batch)
+      cli::cli_progress_update(set = extracted)
+    })
+  }
+
+  cli::cli_progress_done()
+  cli::cli_alert_success("  {zip_name} extrait ({extracted}/{n_files} fichiers)")
+  invisible(TRUE)
+}
+
 #' Télécharger le dataset TreeSatAI-Time-Series depuis HuggingFace
 #'
 #' Télécharge les données du dataset IGNF/TreeSatAI-Time-Series hébergé
@@ -228,13 +288,7 @@ download_treesatai_hf <- function(dest_dir   = file.path(DATA_DIR, "treesatai"),
   if (length(zip_files) > 0) {
     cli::cli_h2("Extraction des archives")
     for (zf in zip_files) {
-      cli::cli_alert_info("Extraction : {basename(zf)}")
-      tryCatch({
-        unzip(zf, exdir = dirname(zf))
-        cli::cli_alert_success("  Extrait dans {dirname(zf)}")
-      }, error = function(e) {
-        cli::cli_alert_warning("  \u00c9chec extraction : {e$message}")
-      })
+      .unzip_with_progress(zf, dirname(zf))
     }
   }
 
