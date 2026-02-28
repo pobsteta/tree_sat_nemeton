@@ -51,6 +51,7 @@ export(plot_dashboard)
 # --- HuggingFace dataset ---
 export(load_treesatai_labels)
 export(load_treesatai_split)
+export(load_treesatai_data)
 export(init_project_dirs)
 
 # --- Python bridge ---
@@ -58,6 +59,7 @@ export(setup_python_env)
 export(check_python_ready)
 
 # --- Imports ---
-importFrom(stats, predict, setNames, median, runif, rnorm, sd, quantile, fft)
+import(ggplot2)
+importFrom(stats, predict, setNames, median, runif, rnorm, sd, quantile, fft, var, approx)
 importFrom(utils, download.file, install.packages, unzip)
-importFrom(grDevices, colorRampPalette)
+importFrom(grDevices, colorRampPalette, dev.off, png)
