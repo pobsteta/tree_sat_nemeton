@@ -766,67 +766,90 @@ load_treesatai_data <- function(data_path) {
     as.Date(TS_PARAMS$end_date),
     by = TS_PARAMS$target_interval_days
   )
-  n_dates <- length(target_dates)
+  n_dates  <- length(target_dates)
+  n_patches <- nrow(dominant)
+  total_rows <- n_patches * n_dates
 
-  cli::cli_alert_info("G\u00e9n\u00e9ration pour {nrow(dominant)} patchs \u00d7 {n_dates} dates")
-  cli::cli_progress_bar("G\u00e9n\u00e9ration synth\u00e9tique", total = nrow(dominant))
+  cli::cli_alert_info("G\u00e9n\u00e9ration pour {n_patches} patchs \u00d7 {n_dates} dates ({total_rows} lignes)")
 
-  all_data <- vector("list", nrow(dominant))
+  # Pré-allouer les vecteurs de métadonnées
+  plot_ids <- rep(dominant$patch_id, each = n_dates)
+  sp_codes <- rep(dominant$species_code, each = n_dates)
+  sp_names <- rep(dominant$species_name, each = n_dates)
+  dates_vec <- rep(target_dates, times = n_patches)
 
-  for (i in seq_len(nrow(dominant))) {
-    cli::cli_progress_update()
+  # Pré-allouer la matrice de bandes (beaucoup plus rapide que 50k data.frames)
+  band_mat <- matrix(0, nrow = total_rows, ncol = 10)
 
-    patch <- dominant[i, ]
-    sp_code <- patch$species_code
+  cli::cli_progress_bar(
+    "G\u00e9n\u00e9ration synth\u00e9tique",
+    total = n_patches,
+    format = "{cli::pb_bar} {cli::pb_percent} | {cli::pb_current}/{cli::pb_total} patchs | ETA: {cli::pb_eta}"
+  )
+
+  for (i in seq_len(n_patches)) {
+    if (i %% 100 == 0 || i == n_patches) cli::cli_progress_update(set = i)
+
+    sp_code <- dominant$species_code[i]
     if (sp_code == 0 || is.na(sp_code)) sp_code <- 1L
 
-    set.seed(sp_code * 1000 + i)
+    set.seed(sp_code * 1000L + i)
 
     # Simuler NDVI via le moteur existant
     ndvi <- simulate_species_ndvi(sp_code, target_dates)
 
-    # Dériver les bandes spectrales à partir du NDVI
-    nir  <- 0.3 + 0.4 * ndvi + rnorm(n_dates, 0, 0.02)
-    red  <- nir * (1 - ndvi) / (1 + ndvi + 1e-6) + rnorm(n_dates, 0, 0.01)
-    blue <- red * runif(1, 0.7, 0.9) + rnorm(n_dates, 0, 0.01)
+    # Dériver les bandes spectrales
+    nir   <- 0.3 + 0.4 * ndvi + rnorm(n_dates, 0, 0.02)
+    red   <- nir * (1 - ndvi) / (1 + ndvi + 1e-6) + rnorm(n_dates, 0, 0.01)
+    blue  <- red * runif(1, 0.7, 0.9) + rnorm(n_dates, 0, 0.01)
     green <- (red + nir) / 3 + rnorm(n_dates, 0, 0.01)
-    rededge1 <- (red + nir) / 2 * runif(1, 0.85, 0.95) + rnorm(n_dates, 0, 0.01)
-    rededge2 <- (rededge1 + nir) / 2 + rnorm(n_dates, 0, 0.01)
-    rededge3 <- nir * runif(1, 0.9, 0.98) + rnorm(n_dates, 0, 0.01)
-    nir2 <- nir * runif(1, 0.85, 0.95) + rnorm(n_dates, 0, 0.01)
+    re1   <- (red + nir) / 2 * runif(1, 0.85, 0.95) + rnorm(n_dates, 0, 0.01)
+    re2   <- (re1 + nir) / 2 + rnorm(n_dates, 0, 0.01)
+    re3   <- nir * runif(1, 0.9, 0.98) + rnorm(n_dates, 0, 0.01)
+    nir2  <- nir * runif(1, 0.85, 0.95) + rnorm(n_dates, 0, 0.01)
     swir1 <- 0.2 - 0.1 * ndvi + rnorm(n_dates, 0, 0.02)
     swir2 <- swir1 * runif(1, 0.6, 0.8) + rnorm(n_dates, 0, 0.01)
 
-    bands <- data.frame(
-      B02 = pmax(0, blue), B03 = pmax(0, green), B04 = pmax(0, red),
-      B05 = pmax(0, rededge1), B06 = pmax(0, rededge2), B07 = pmax(0, rededge3),
-      B08 = pmax(0, nir), B8A = pmax(0, nir2),
-      B11 = pmax(0, swir1), B12 = pmax(0, swir2)
-    )
-
-    idx_ndvi   <- calc_ndvi(bands$B08, bands$B04)
-    idx_evi    <- calc_evi(bands$B08, bands$B04, bands$B02)
-    idx_ndwi   <- (bands$B03 - bands$B08) / (bands$B03 + bands$B08 + 1e-10)
-    idx_nbr    <- (bands$B08 - bands$B12) / (bands$B08 + bands$B12 + 1e-10)
-    idx_cri    <- (1 / (bands$B02 + 1e-10)) - (1 / (bands$B03 + 1e-10))
-    idx_rendvi <- (bands$B06 - bands$B05) / (bands$B06 + bands$B05 + 1e-10)
-
-    all_data[[i]] <- data.frame(
-      plot_id      = patch$patch_id,
-      species_code = sp_code,
-      species_name = patch$species_name,
-      date         = target_dates,
-      bands,
-      NDVI = idx_ndvi, EVI = idx_evi, NDWI = idx_ndwi,
-      NBR = idx_nbr, CRI = idx_cri, RENDVI = idx_rendvi,
-      stringsAsFactors = FALSE
-    )
+    rows <- ((i - 1L) * n_dates + 1L):(i * n_dates)
+    band_mat[rows,  1] <- pmax(0, blue)
+    band_mat[rows,  2] <- pmax(0, green)
+    band_mat[rows,  3] <- pmax(0, red)
+    band_mat[rows,  4] <- pmax(0, re1)
+    band_mat[rows,  5] <- pmax(0, re2)
+    band_mat[rows,  6] <- pmax(0, re3)
+    band_mat[rows,  7] <- pmax(0, nir)
+    band_mat[rows,  8] <- pmax(0, nir2)
+    band_mat[rows,  9] <- pmax(0, swir1)
+    band_mat[rows, 10] <- pmax(0, swir2)
   }
 
   cli::cli_progress_done()
 
-  result <- do.call(rbind, all_data)
-  cli::cli_alert_success("Dataset synth\u00e9tique : {nrow(result)} lignes ({nrow(dominant)} patchs)")
+  # Construction d'un seul data.frame (évite do.call(rbind, 50k))
+  cli::cli_alert_info("Construction du data.frame ({total_rows} lignes)...")
+
+  result <- data.frame(
+    plot_id      = plot_ids,
+    species_code = sp_codes,
+    species_name = sp_names,
+    date         = dates_vec,
+    B02 = band_mat[, 1], B03 = band_mat[, 2], B04 = band_mat[, 3],
+    B05 = band_mat[, 4], B06 = band_mat[, 5], B07 = band_mat[, 6],
+    B08 = band_mat[, 7], B8A = band_mat[, 8],
+    B11 = band_mat[, 9], B12 = band_mat[, 10],
+    stringsAsFactors = FALSE
+  )
+
+  # Indices spectraux — vectorisés sur tout le data.frame d'un coup
+  cli::cli_alert_info("Calcul des indices spectraux...")
+  result$NDVI   <- calc_ndvi(result$B08, result$B04)
+  result$EVI    <- calc_evi(result$B08, result$B04, result$B02)
+  result$NDWI   <- (result$B03 - result$B08) / (result$B03 + result$B08 + 1e-10)
+  result$NBR    <- (result$B08 - result$B12) / (result$B08 + result$B12 + 1e-10)
+  result$CRI    <- (1 / (result$B02 + 1e-10)) - (1 / (result$B03 + 1e-10))
+  result$RENDVI <- (result$B06 - result$B05) / (result$B06 + result$B05 + 1e-10)
+
+  cli::cli_alert_success("Dataset synth\u00e9tique : {nrow(result)} lignes ({n_patches} patchs)")
   result
 }
 
