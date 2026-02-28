@@ -26,7 +26,10 @@ YEAR          <- 2021    # Année de simulation / prédiction
 SKIP_PREDICT  <- FALSE   # TRUE = ne pas lancer la prédiction spatiale
 
 # --- 0. Nettoyage et installation du package ---------------------------------
-rm(list = ls(pattern = "^(?!USE_|N_SAMPLES|YEAR|SKIP_PREDICT)", perl = TRUE))
+all_objs <- ls()
+keep <- c("USE_SYNTHETIC", "N_SAMPLES", "YEAR", "SKIP_PREDICT")
+rm(list = setdiff(all_objs, keep))
+rm(all_objs, keep)
 gc()
 
 if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes")
