@@ -127,19 +127,13 @@ build_s2_cube <- function(s2_dir, aoi, bands = S2_BAND_NAMES,
       if (nrow(bf) > 0) {
         r <- terra::rast(bf$path[1])
 
-        # Reprojeter et rééchantillonner si nécessaire
-        if (!terra::same.crs(r, terra::crs("EPSG:2154"))) {
-          r <- terra::project(r, "EPSG:2154", method = "bilinear")
-        }
+        # Créer un raster template aligné sur l'AOI à la résolution cible
+        target_template <- terra::rast(aoi_ext, resolution = resolution, crs = "EPSG:2154")
 
-        # Rééchantillonner à la résolution cible
-        if (terra::res(r)[1] != resolution) {
-          template <- terra::rast(aoi_ext, resolution = resolution, crs = "EPSG:2154")
-          r <- terra::resample(r, template, method = "bilinear")
-        }
+        # Reprojeter directement vers le template (CRS + résolution + extent en une seule passe)
+        r <- terra::project(r, target_template, method = "bilinear")
 
-        # Cropper sur l'AOI
-        r <- terra::crop(r, aoi_ext)
+        # Masquer les pixels hors de l'AOI
         r <- terra::mask(r, aoi_vect)
 
         names(r) <- paste0(band, "_", format(current_date, "%Y%m%d"))
@@ -206,8 +200,32 @@ extract_pixel_features <- function(cube_list, dates, block_size = 100) {
 
   log_msg("  Cube chargé en mémoire")
 
-  # Identifier les pixels valides (pas 100% NA)
-  valid_mask <- rowSums(!is.na(cube_arrays[[bands[1]]])) >= 5
+  # Diagnostic : statistiques du cube pour la première bande
+  first_band_mat <- cube_arrays[[bands[1]]]
+  n_na_per_date <- colSums(is.na(first_band_mat))
+  n_nonzero_per_date <- colSums(!is.na(first_band_mat) & first_band_mat != 0, na.rm = TRUE)
+  log_msg("  Diagnostic {bands[1]} : {n_pixels} pixels × {n_dates} dates")
+  log_msg("  NA par date (min/max) : {min(n_na_per_date)}/{max(n_na_per_date)}")
+  log_msg("  Non-NA & non-zero par date (min/max) : {min(n_nonzero_per_date)}/{max(n_nonzero_per_date)}")
+
+  if (all(is.na(first_band_mat))) {
+    # Diagnostic supplémentaire : vérifier les noms de couches
+    log_msg("  ATTENTION : toutes les valeurs sont NA !", level = "danger")
+    log_msg("  Noms des couches du cube[1] : {paste(names(cube_list[[1]]), collapse=', ')}")
+    log_msg("  Bandes recherchées : {paste(bands, collapse=', ')}")
+
+    # Essayer de lire les valeurs brutes sans filtrage par nom
+    test_vals <- terra::values(cube_list[[1]])
+    n_not_na <- sum(!is.na(test_vals))
+    log_msg("  Valeurs brutes non-NA dans cube[1] : {n_not_na} / {length(test_vals)}")
+    if (n_not_na > 0) {
+      val_range <- range(test_vals, na.rm = TRUE)
+      log_msg("  Plage de valeurs : [{val_range[1]}, {val_range[2]}]")
+    }
+  }
+
+  # Identifier les pixels valides (au moins 3 dates non-NA pour la première bande)
+  valid_mask <- rowSums(!is.na(first_band_mat)) >= 3
   valid_idx  <- which(valid_mask)
   n_valid    <- length(valid_idx)
 
@@ -215,6 +233,7 @@ extract_pixel_features <- function(cube_list, dates, block_size = 100) {
 
   if (n_valid == 0) {
     cli::cli_alert_danger("Aucun pixel valide dans l'AOI")
+    cli::cli_alert_info("Vérifiez que les rasters téléchargés couvrent bien la zone d'intérêt.")
     return(NULL)
   }
 

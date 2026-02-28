@@ -313,18 +313,16 @@ evaluate_classification <- function(y_true, y_pred, class_names = NULL) {
   )
 
   per_class$precision <- sapply(class_names, function(cls) {
-    tp <- if (cls %in% rownames(conf_mat) && cls %in% colnames(conf_mat)) {
-      conf_mat[cls, cls]
-    } else 0
-    fp <- sum(conf_mat[, cls %in% colnames(conf_mat)]) - tp
+    if (!(cls %in% rownames(conf_mat) && cls %in% colnames(conf_mat))) return(0)
+    tp <- conf_mat[cls, cls]
+    fp <- sum(conf_mat[, cls]) - tp
     if (tp + fp == 0) 0 else tp / (tp + fp)
   })
 
   per_class$recall <- sapply(class_names, function(cls) {
-    tp <- if (cls %in% rownames(conf_mat) && cls %in% colnames(conf_mat)) {
-      conf_mat[cls, cls]
-    } else 0
-    fn <- sum(conf_mat[cls %in% rownames(conf_mat), ]) - tp
+    if (!(cls %in% rownames(conf_mat) && cls %in% colnames(conf_mat))) return(0)
+    tp <- conf_mat[cls, cls]
+    fn <- sum(conf_mat[cls, ]) - tp
     if (tp + fn == 0) 0 else tp / (tp + fn)
   })
 
