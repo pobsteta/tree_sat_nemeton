@@ -49,6 +49,7 @@ detect_season <- function(ndvi_ts, dates, threshold = 0.5) {
     eos_idx <- if (!is.na(eos_rel_idx)) max_idx + eos_rel_idx - 1 else NA
     EOS <- if (!is.na(eos_idx)) doy[eos_idx] else NA
   } else {
+    eos_idx <- NA
     EOS <- NA
   }
 
