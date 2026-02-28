@@ -586,9 +586,28 @@ build_feature_matrix <- function(ts_long) {
   plot_ids <- unique(ts_long$plot_id)
   target_dates <- sort(unique(ts_long$date))
   doy_labels <- format(target_dates, "%j")
+  n_plots <- length(plot_ids)
 
-  rows <- lapply(plot_ids, function(pid) {
-    plot_data <- ts_long[ts_long$plot_id == pid, ]
+  log_msg("  {n_plots} parcelles \u00d7 {length(target_dates)} dates \u00d7 {length(S2_BAND_NAMES)} bandes",
+          level = "info")
+
+  # Pré-découper le data.frame par plot_id (O(n) au lieu de O(n*m))
+  log_msg("  D\u00e9coupage par parcelle...", level = "info")
+  plots_split <- split(ts_long, ts_long$plot_id)
+
+  cli::cli_progress_bar(
+    "Construction features",
+    total = n_plots,
+    format = "{cli::pb_bar} {cli::pb_percent} | {cli::pb_current}/{cli::pb_total} parcelles | ETA: {cli::pb_eta}"
+  )
+
+  rows <- vector("list", n_plots)
+
+  for (k in seq_len(n_plots)) {
+    if (k %% 500 == 0 || k == n_plots) cli::cli_progress_update(set = k)
+
+    pid <- plot_ids[k]
+    plot_data <- plots_split[[pid]]
     plot_data <- plot_data[order(plot_data$date), ]
 
     species_code <- plot_data$species_code[1]
@@ -639,17 +658,21 @@ build_feature_matrix <- function(ts_long) {
       idx_features <- c(idx_features, fourier)
     }
 
-    c(plot_id = pid, species_code = species_code, species_name = species_name,
-      band_features, idx_features)
-  })
+    rows[[k]] <- c(plot_id = pid, species_code = species_code,
+                   species_name = species_name,
+                   band_features, idx_features)
+  }
 
+  cli::cli_progress_done()
+
+  log_msg("  Assemblage du data.frame...", level = "info")
   df <- as.data.frame(do.call(rbind, rows), stringsAsFactors = FALSE)
 
   # Conversion numérique
   numeric_cols <- setdiff(names(df), c("plot_id", "species_name"))
   df[numeric_cols] <- lapply(df[numeric_cols], as.numeric)
 
-  log_msg("Matrice de features : {nrow(df)} parcelles × {ncol(df)} colonnes",
+  log_msg("Matrice de features : {nrow(df)} parcelles \u00d7 {ncol(df)} colonnes",
           level = "success")
 
   df
