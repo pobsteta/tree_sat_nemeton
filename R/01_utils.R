@@ -224,9 +224,14 @@ list_s2_files <- function(input_dir, band = NULL) {
 # --- Logging ------------------------------------------------------------------
 
 #' Log un message avec horodatage
+#'
+#' Supporte l'interpolation glue : log_msg("{nrow(SPECIES)} espèces")
 log_msg <- function(..., level = "info") {
   timestamp <- format(Sys.time(), "%Y-%m-%d %H:%M:%S")
-  msg <- paste0(...)
+  msg <- tryCatch(
+    glue::glue(..., .envir = parent.frame()),
+    error = function(e) paste0(...)
+  )
   switch(level,
     "info"    = cli::cli_alert_info("[{timestamp}] {msg}"),
     "success" = cli::cli_alert_success("[{timestamp}] {msg}"),

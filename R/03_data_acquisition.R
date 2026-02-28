@@ -543,12 +543,26 @@ generate_synthetic_dataset <- function(n_samples_per_species = 50, year = 2021) 
         B12 = pmax(0, swir2)
       )
 
+      # Calculer les indices spectraux à partir des bandes
+      idx_ndvi  <- calc_ndvi(bands$B08, bands$B04)
+      idx_evi   <- calc_evi(bands$B08, bands$B04, bands$B02)
+      idx_ndwi  <- (bands$B03 - bands$B08) / (bands$B03 + bands$B08 + 1e-10)
+      idx_nbr   <- (bands$B08 - bands$B12) / (bands$B08 + bands$B12 + 1e-10)
+      idx_cri   <- (1 / (bands$B02 + 1e-10)) - (1 / (bands$B03 + 1e-10))
+      idx_rendvi <- (bands$B06 - bands$B05) / (bands$B06 + bands$B05 + 1e-10)
+
       plot_df <- data.frame(
         plot_id      = plot_id,
         species_code = sp_code,
         species_name = sp_name,
         date         = target_dates,
         bands,
+        NDVI   = idx_ndvi,
+        EVI    = idx_evi,
+        NDWI   = idx_ndwi,
+        NBR    = idx_nbr,
+        CRI    = idx_cri,
+        RENDVI = idx_rendvi,
         stringsAsFactors = FALSE
       )
 
