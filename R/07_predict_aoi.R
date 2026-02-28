@@ -498,7 +498,8 @@ predict_species_map <- function(aoi_path,
         py_model <- py_load_model(model_path)
       } else {
         # Chercher un modèle .pt existant
-        default_pt <- file.path(MODELS_DIR, paste0("treesatai_", pytorch_model, "_best.pt"))
+        models_dir <- file.path(.get_project_root(), "output", "models")
+        default_pt <- file.path(models_dir, paste0("treesatai_", pytorch_model, "_best.pt"))
         if (file.exists(default_pt)) {
           py_model <- py_load_model(default_pt)
         } else {
@@ -516,7 +517,8 @@ predict_species_map <- function(aoi_path,
   if (!use_pytorch) {
     # --- Mode ranger (R) ---
     # Chercher un modèle existant : chemin explicite, puis défaut
-    default_rds <- file.path(MODELS_DIR, "treesatai_rf.rds")
+    models_dir <- file.path(.get_project_root(), "output", "models")
+    default_rds <- file.path(models_dir, "treesatai_rf.rds")
 
     if (!is.null(model_path) && file.exists(model_path) && grepl("\\.rds$", model_path)) {
       model <- readRDS(model_path)

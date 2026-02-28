@@ -28,9 +28,15 @@ train_treesatai <- function(data_path   = NULL,
                              n_samples   = 50,
                              year        = 2021,
                              skip_viz    = FALSE,
-                             output_dir  = OUTPUT_DIR) {
+                             output_dir  = NULL) {
 
-  init_project_dirs()
+  root <- .get_project_root()
+  if (is.null(output_dir)) output_dir <- file.path(root, "output")
+  figures_dir   <- file.path(root, "figures")
+  processed_dir <- file.path(root, "data", "processed")
+  models_dir    <- file.path(output_dir, "models")
+
+  init_project_dirs(root)
 
   # ===========================================================================
   cli::cli_h1("Pipeline TreeSatAI-Time-Series")
@@ -99,17 +105,17 @@ train_treesatai <- function(data_path   = NULL,
     p_profiles <- plot_phenological_profiles(
       ts_long,
       index_name = "NDVI",
-      save_path  = file.path(FIGURES_DIR, "01_phenological_profiles_NDVI.png")
+      save_path  = file.path(figures_dir, "01_phenological_profiles_NDVI.png")
     )
 
     plot_deciduous_vs_evergreen(
       ts_long,
-      save_path = file.path(FIGURES_DIR, "02_deciduous_vs_evergreen.png")
+      save_path = file.path(figures_dir, "02_deciduous_vs_evergreen.png")
     )
 
     plot_profiles_by_type(
       ts_long,
-      save_path = file.path(FIGURES_DIR, "03_profiles_by_type.png")
+      save_path = file.path(figures_dir, "03_profiles_by_type.png")
     )
 
     cli::cli_alert_success("Graphiques ph\u00e9nologiques g\u00e9n\u00e9r\u00e9s")
@@ -122,7 +128,7 @@ train_treesatai <- function(data_path   = NULL,
 
   feature_matrix <- build_feature_matrix(ts_long)
 
-  fm_path <- file.path(PROCESSED_DIR, "feature_matrix.csv")
+  fm_path <- file.path(processed_dir, "feature_matrix.csv")
   readr::write_csv(feature_matrix, fm_path)
   cli::cli_alert_success("Matrice de features sauvegard\u00e9e : {fm_path}")
   cli::cli_text("  Dimensions : {nrow(feature_matrix)} \u00d7 {ncol(feature_matrix)}")
@@ -162,7 +168,7 @@ train_treesatai <- function(data_path   = NULL,
     )
 
     rf_importance <- get_variable_importance(rf_model)
-    save_model(rf_model, rf_eval, model_name = "treesatai_rf")
+    save_model(rf_model, rf_eval, model_name = "treesatai_rf", output_dir = models_dir)
 
     readr::write_csv(rf_importance, file.path(output_dir, "rf_variable_importance.csv"))
     readr::write_csv(rf_eval$per_class, file.path(output_dir, "rf_per_class_metrics.csv"))
@@ -228,28 +234,28 @@ train_treesatai <- function(data_path   = NULL,
       eval_results$confusion_matrix,
       class_names = SPECIES$french,
       title = "Matrice de confusion \u2014 20 esp\u00e8ces",
-      save_path = file.path(FIGURES_DIR, "04_confusion_matrix.png")
+      save_path = file.path(figures_dir, "04_confusion_matrix.png")
     )
 
     if (!is.null(rf_importance)) {
       plot_variable_importance(
         rf_importance,
         top_n = 30,
-        save_path = file.path(FIGURES_DIR, "05_variable_importance.png")
+        save_path = file.path(figures_dir, "05_variable_importance.png")
       )
     }
 
     plot_species_metrics(
       eval_results$per_class,
-      save_path = file.path(FIGURES_DIR, "06_species_metrics.png")
+      save_path = file.path(figures_dir, "06_species_metrics.png")
     )
 
     plot_spectral_heatmap(
       feature_matrix,
-      save_path = file.path(FIGURES_DIR, "07_spectral_heatmap.png")
+      save_path = file.path(figures_dir, "07_spectral_heatmap.png")
     )
 
-    cli::cli_alert_success("Toutes les visualisations g\u00e9n\u00e9r\u00e9es dans {FIGURES_DIR}")
+    cli::cli_alert_success("Toutes les visualisations g\u00e9n\u00e9r\u00e9es dans {figures_dir}")
   }
 
   # ===========================================================================
@@ -263,7 +269,7 @@ train_treesatai <- function(data_path   = NULL,
     cli::cli_alert_info("OA : {round(eval_final$overall_accuracy * 100, 1)}%  |  Kappa : {round(eval_final$kappa, 3)}")
   }
   cli::cli_text("")
-  cli::cli_text("Mod\u00e8le sauvegard\u00e9 dans : {.path {MODELS_DIR}}")
+  cli::cli_text("Mod\u00e8le sauvegard\u00e9 dans : {.path {models_dir}}")
 
   invisible(list(
     model          = rf_model,

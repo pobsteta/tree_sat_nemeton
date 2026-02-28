@@ -595,7 +595,8 @@ train_temporal_cnn <- function(train_tensors, val_tensors = NULL,
 #' @param model_name Nom du modèle
 #' @param output_dir Répertoire de sortie
 save_model <- function(model, eval_results = NULL, model_name = "treesatai_rf",
-                        output_dir = MODELS_DIR) {
+                        output_dir = NULL) {
+  if (is.null(output_dir)) output_dir <- file.path(.get_project_root(), "output", "models")
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
   # Sauvegarder le modèle R

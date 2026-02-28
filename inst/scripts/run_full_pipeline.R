@@ -49,7 +49,7 @@ cat("Test             :", length(split$test), "patchs\n\n")
 
 # --- 2. Entraîner un modèle sur les données réelles -------------------------
 # Supprime l'ancien modèle synthétique s'il existe
-old_model <- file.path(MODELS_DIR, "treesatai_rf.rds")
+old_model <- file.path(.get_project_root(), "output", "models", "treesatai_rf.rds")
 if (file.exists(old_model)) {
   file.remove(old_model)
   cat("Ancien modèle synthétique supprimé.\n")
