@@ -203,6 +203,17 @@ extract_pixel_features <- function(cube_list, dates, block_size = 100) {
 
   log_msg("  Cube chargé en mémoire")
 
+  # Normalisation Sentinel-2 L2A : réflectance entière (0-10000) → 0-1
+  # Les données synthétiques d'entraînement sont en réflectance 0-1,
+  # les données S2 L2A réelles sont en réflectance × S2_SCALE_FACTOR
+  first_max <- max(cube_arrays[[bands[1]]], na.rm = TRUE)
+  if (!is.na(first_max) && first_max > 2) {
+    log_msg("  Normalisation S2 : valeurs max={round(first_max)} → division par {S2_SCALE_FACTOR}")
+    for (band in bands) {
+      cube_arrays[[band]] <- cube_arrays[[band]] / S2_SCALE_FACTOR
+    }
+  }
+
   # Diagnostic : statistiques du cube pour la première bande
   first_band_mat <- cube_arrays[[bands[1]]]
   n_na_per_date <- colSums(is.na(first_band_mat))

@@ -52,6 +52,9 @@ S2_BANDS <- list(
   B12 = list(name = "SWIR2",    wavelength = 2190, resolution = 20)
 )
 
+# Facteur d'échelle Sentinel-2 L2A (réflectance entière → 0-1)
+S2_SCALE_FACTOR <- 10000
+
 # Bandes utilisées pour la classification (10 bandes spectrales)
 S2_BAND_NAMES <- names(S2_BANDS)
 
