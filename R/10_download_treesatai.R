@@ -528,4 +528,306 @@ load_treesatai_split <- function(split_dir = NULL) {
   list(train = train_patches, test = test_patches)
 }
 
+# ==============================================================================
+# Correspondance Genre → espèce (pour la classification au niveau genre)
+# ==============================================================================
+
+# Table de correspondance genre → nom français + code SPECIES
+GENUS_MAP <- list(
+  Fagus        = list(french = "H\u00eatre",                code = 5),
+  Quercus      = list(french = "Ch\u00eane p\u00e9doncul\u00e9", code = 1),
+  Picea        = list(french = "\u00c9pic\u00e9a commun",   code = 13),
+  Pinus        = list(french = "Pin sylvestre",             code = 16),
+  Abies        = list(french = "Sapin pectin\u00e9",        code = 14),
+  Larix        = list(french = "M\u00e9l\u00e8ze d'Europe", code = 20),
+  Betula       = list(french = "Bouleau verruqueux",        code = 8),
+  Acer         = list(french = "\u00c9rable sycomore",      code = 10),
+  Fraxinus     = list(french = "Fr\u00eane commun",         code = 9),
+  Carpinus     = list(french = "Charme",                    code = 7),
+  Pseudotsuga  = list(french = "Douglas",                   code = 15),
+  Populus      = list(french = "Peupliers",                 code = 11),
+  Robinia      = list(french = "Robinier faux-acacia",      code = 12),
+  Castanea     = list(french = "Ch\u00e2taignier",          code = 6),
+  Alnus        = list(french = "Aulne",                     code = NA),
+  Tilia        = list(french = "Tilleul",                   code = NA),
+  Sorbus       = list(french = "Sorbier",                   code = NA),
+  Salix        = list(french = "Saule",                     code = NA),
+  Ulmus        = list(french = "Orme",                      code = NA)
+)
+
+# ==============================================================================
+# Chargement complet des données TreeSatAI pour le pipeline
+# ==============================================================================
+
+#' Charger les données TreeSatAI et construire ts_long pour le pipeline
+#'
+#' Détecte le format TreeSatAI (labels JSON + patches HDF5 dans sentinel-ts),
+#' lit les séries temporelles et construit un data.frame au format ts_long
+#' compatible avec build_feature_matrix().
+#'
+#' @param data_path Chemin vers le répertoire TreeSatAI
+#' @return Liste avec ts_long (data.frame), split (list train/test),
+#'   genus_names (vecteur des genres uniques)
+#' @export
+load_treesatai_data <- function(data_path) {
+  cli::cli_h2("Chargement des donn\u00e9es TreeSatAI")
+
+  # --- 1. Labels ---
+  labels_file <- list.files(data_path, pattern = "multi_labels.*\\.json$",
+                             recursive = TRUE, full.names = TRUE)
+  if (length(labels_file) == 0) {
+    stop("Labels TreeSatAI non trouv\u00e9s dans ", data_path,
+         ". Lancez d'abord download_treesatai_hf()")
+  }
+  labels <- load_treesatai_labels(labels_file[1])
+
+  # Genre dominant par patch (proportion la plus élevée)
+  dominant <- do.call(rbind, lapply(split(labels, labels$patch_id), function(df) {
+    idx <- which.max(df$proportion)
+    data.frame(
+      patch_id     = df$patch_id[1],
+      genus        = df$genus[idx],
+      proportion   = df$proportion[idx],
+      stringsAsFactors = FALSE
+    )
+  }))
+  rownames(dominant) <- NULL
+
+  # Mapper genre → nom français
+  dominant$species_name <- vapply(dominant$genus, function(g) {
+    info <- GENUS_MAP[[g]]
+    if (!is.null(info)) info$french else g
+  }, character(1))
+
+  dominant$species_code <- vapply(dominant$genus, function(g) {
+    info <- GENUS_MAP[[g]]
+    if (!is.null(info) && !is.na(info$code)) info$code else 0L
+  }, integer(1))
+
+  genus_names <- sort(unique(dominant$species_name))
+  cli::cli_alert_success("{nrow(dominant)} patchs, {length(genus_names)} genres : {paste(genus_names, collapse = ', ')}")
+
+  # --- 2. Split train/test ---
+  split_dir <- file.path(data_path, "split")
+  split_info <- if (dir.exists(split_dir)) {
+    load_treesatai_split(split_dir)
+  } else {
+    cli::cli_alert_warning("Split non trouv\u00e9, s\u00e9paration al\u00e9atoire 70/30")
+    NULL
+  }
+
+  # --- 3. Recherche des données sentinel-ts (HDF5) ---
+  ts_dir <- file.path(data_path, "sentinel-ts")
+  ts_long <- NULL
+
+  if (dir.exists(ts_dir)) {
+    # Chercher les fichiers HDF5
+    h5_files <- list.files(ts_dir, pattern = "\\.(h5|hdf5|hdf)$",
+                            recursive = TRUE, full.names = TRUE)
+
+    if (length(h5_files) > 0 && requireNamespace("hdf5r", quietly = TRUE)) {
+      cli::cli_alert_info("Lecture de {length(h5_files)} patchs HDF5...")
+      ts_long <- .read_treesatai_hdf5(h5_files, dominant)
+    } else if (length(h5_files) > 0) {
+      cli::cli_alert_warning(
+        "Patchs HDF5 trouv\u00e9s mais {.pkg hdf5r} non install\u00e9. ",
+        "install.packages('hdf5r') pour lire les donn\u00e9es r\u00e9elles."
+      )
+    }
+  }
+
+  # --- 4. Fallback : données synthétiques basées sur les labels réels ---
+  if (is.null(ts_long)) {
+    cli::cli_alert_info("G\u00e9n\u00e9ration de s\u00e9ries temporelles synth\u00e9tiques bas\u00e9es sur les labels r\u00e9els")
+    ts_long <- .generate_ts_from_labels(dominant)
+  }
+
+  list(
+    ts_long      = ts_long,
+    split        = split_info,
+    genus_names  = genus_names,
+    dominant     = dominant
+  )
+}
+
+# --- Lecture HDF5 des patches TreeSatAI ---
+.read_treesatai_hdf5 <- function(h5_files, dominant) {
+  # Dates cibles (73 pas de 5 jours sur 1 an)
+  target_dates <- seq.Date(
+    as.Date(TS_PARAMS$start_date),
+    as.Date(TS_PARAMS$end_date),
+    by = TS_PARAMS$target_interval_days
+  )
+
+  # Index des patchs par nom de fichier
+  patch_names <- dominant$patch_id
+  # Le nom HDF5 peut être Genus_species_age_ID_dataset_source.h5
+  # Le label utilise .tif, le fichier est .h5
+  h5_basenames <- tools::file_path_sans_ext(basename(h5_files))
+
+  cli::cli_progress_bar("Lecture HDF5", total = length(h5_files))
+
+  all_rows <- list()
+
+  for (i in seq_along(h5_files)) {
+    cli::cli_progress_update()
+
+    h5_name <- h5_basenames[i]
+
+    # Chercher le patch dans les labels (nom .tif ou sans extension)
+    match_tif <- paste0(h5_name, ".tif")
+    match_idx <- match(match_tif, patch_names)
+    if (is.na(match_idx)) match_idx <- match(h5_name, patch_names)
+    if (is.na(match_idx)) next
+
+    patch_info <- dominant[match_idx, ]
+
+    tryCatch({
+      f <- hdf5r::H5File$new(h5_files[i], mode = "r")
+      on.exit(f$close_all(), add = TRUE)
+
+      # sen-2-data : (T, 10, 6, 6)
+      if (f$exists("sen-2-data")) {
+        s2 <- f[["sen-2-data"]]$read()
+        # Spatial mean over 6x6 → (T, 10)
+        n_t <- dim(s2)[1]
+        n_b <- dim(s2)[2]
+
+        # Moyenne spatiale
+        s2_mean <- apply(s2, c(1, 2), mean, na.rm = TRUE)
+
+        # Interpoler à 73 dates si nécessaire
+        if (n_t != length(target_dates)) {
+          orig_dates <- seq.Date(
+            as.Date(TS_PARAMS$start_date),
+            as.Date(TS_PARAMS$end_date),
+            length.out = n_t
+          )
+          s2_interp <- matrix(NA, nrow = length(target_dates), ncol = n_b)
+          for (b in 1:n_b) {
+            s2_interp[, b] <- approx(
+              as.numeric(orig_dates), s2_mean[, b],
+              xout = as.numeric(target_dates),
+              rule = 2
+            )$y
+          }
+          s2_mean <- s2_interp
+          n_t <- length(target_dates)
+        }
+
+        # Construire le data.frame (1 ligne par date)
+        bands_df <- as.data.frame(s2_mean)
+        if (ncol(bands_df) >= 10) {
+          names(bands_df) <- S2_BAND_NAMES[1:ncol(bands_df)]
+        }
+
+        patch_df <- data.frame(
+          plot_id      = patch_info$patch_id,
+          species_code = patch_info$species_code,
+          species_name = patch_info$species_name,
+          date         = target_dates[1:n_t],
+          stringsAsFactors = FALSE
+        )
+        patch_df <- cbind(patch_df, bands_df)
+
+        # Calculer les indices spectraux
+        if (all(c("B08", "B04", "B02") %in% names(patch_df))) {
+          patch_df$NDVI   <- calc_ndvi(patch_df$B08, patch_df$B04)
+          patch_df$EVI    <- calc_evi(patch_df$B08, patch_df$B04, patch_df$B02)
+          patch_df$NDWI   <- (patch_df$B03 - patch_df$B08) / (patch_df$B03 + patch_df$B08 + 1e-10)
+          patch_df$NBR    <- (patch_df$B08 - patch_df$B12) / (patch_df$B08 + patch_df$B12 + 1e-10)
+          patch_df$CRI    <- (1 / (patch_df$B02 + 1e-10)) - (1 / (patch_df$B03 + 1e-10))
+          patch_df$RENDVI <- (patch_df$B06 - patch_df$B05) / (patch_df$B06 + patch_df$B05 + 1e-10)
+        }
+
+        all_rows[[length(all_rows) + 1]] <- patch_df
+      }
+    }, error = function(e) {
+      # Ignorer les fichiers illisibles
+    })
+  }
+
+  cli::cli_progress_done()
+
+  if (length(all_rows) == 0) {
+    cli::cli_alert_warning("Aucun patch HDF5 lisible")
+    return(NULL)
+  }
+
+  result <- do.call(rbind, all_rows)
+  cli::cli_alert_success("{length(all_rows)} patchs lus, {nrow(result)} observations")
+  result
+}
+
+# --- Génération synthétique basée sur les labels réels ---
+.generate_ts_from_labels <- function(dominant) {
+  target_dates <- seq.Date(
+    as.Date(TS_PARAMS$start_date),
+    as.Date(TS_PARAMS$end_date),
+    by = TS_PARAMS$target_interval_days
+  )
+  n_dates <- length(target_dates)
+
+  cli::cli_alert_info("G\u00e9n\u00e9ration pour {nrow(dominant)} patchs \u00d7 {n_dates} dates")
+  cli::cli_progress_bar("G\u00e9n\u00e9ration synth\u00e9tique", total = nrow(dominant))
+
+  all_data <- vector("list", nrow(dominant))
+
+  for (i in seq_len(nrow(dominant))) {
+    cli::cli_progress_update()
+
+    patch <- dominant[i, ]
+    sp_code <- patch$species_code
+    if (sp_code == 0 || is.na(sp_code)) sp_code <- 1L
+
+    set.seed(sp_code * 1000 + i)
+
+    # Simuler NDVI via le moteur existant
+    ndvi <- simulate_species_ndvi(sp_code, target_dates)
+
+    # Dériver les bandes spectrales à partir du NDVI
+    nir  <- 0.3 + 0.4 * ndvi + rnorm(n_dates, 0, 0.02)
+    red  <- nir * (1 - ndvi) / (1 + ndvi + 1e-6) + rnorm(n_dates, 0, 0.01)
+    blue <- red * runif(1, 0.7, 0.9) + rnorm(n_dates, 0, 0.01)
+    green <- (red + nir) / 3 + rnorm(n_dates, 0, 0.01)
+    rededge1 <- (red + nir) / 2 * runif(1, 0.85, 0.95) + rnorm(n_dates, 0, 0.01)
+    rededge2 <- (rededge1 + nir) / 2 + rnorm(n_dates, 0, 0.01)
+    rededge3 <- nir * runif(1, 0.9, 0.98) + rnorm(n_dates, 0, 0.01)
+    nir2 <- nir * runif(1, 0.85, 0.95) + rnorm(n_dates, 0, 0.01)
+    swir1 <- 0.2 - 0.1 * ndvi + rnorm(n_dates, 0, 0.02)
+    swir2 <- swir1 * runif(1, 0.6, 0.8) + rnorm(n_dates, 0, 0.01)
+
+    bands <- data.frame(
+      B02 = pmax(0, blue), B03 = pmax(0, green), B04 = pmax(0, red),
+      B05 = pmax(0, rededge1), B06 = pmax(0, rededge2), B07 = pmax(0, rededge3),
+      B08 = pmax(0, nir), B8A = pmax(0, nir2),
+      B11 = pmax(0, swir1), B12 = pmax(0, swir2)
+    )
+
+    idx_ndvi   <- calc_ndvi(bands$B08, bands$B04)
+    idx_evi    <- calc_evi(bands$B08, bands$B04, bands$B02)
+    idx_ndwi   <- (bands$B03 - bands$B08) / (bands$B03 + bands$B08 + 1e-10)
+    idx_nbr    <- (bands$B08 - bands$B12) / (bands$B08 + bands$B12 + 1e-10)
+    idx_cri    <- (1 / (bands$B02 + 1e-10)) - (1 / (bands$B03 + 1e-10))
+    idx_rendvi <- (bands$B06 - bands$B05) / (bands$B06 + bands$B05 + 1e-10)
+
+    all_data[[i]] <- data.frame(
+      plot_id      = patch$patch_id,
+      species_code = sp_code,
+      species_name = patch$species_name,
+      date         = target_dates,
+      bands,
+      NDVI = idx_ndvi, EVI = idx_evi, NDWI = idx_ndwi,
+      NBR = idx_nbr, CRI = idx_cri, RENDVI = idx_rendvi,
+      stringsAsFactors = FALSE
+    )
+  }
+
+  cli::cli_progress_done()
+
+  result <- do.call(rbind, all_data)
+  cli::cli_alert_success("Dataset synth\u00e9tique : {nrow(result)} lignes ({nrow(dominant)} patchs)")
+  result
+}
+
 # %||% est défini dans 08_download_satellite.R

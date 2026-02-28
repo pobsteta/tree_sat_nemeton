@@ -58,6 +58,8 @@ train_treesatai <- function(data_path   = NULL,
 
     ts_long <- generate_synthetic_dataset(n_samples_per_species = n_samples, year = year)
     cli::cli_alert_success("Dataset synth\u00e9tique g\u00e9n\u00e9r\u00e9 : {nrow(ts_long)} observations")
+    use_treesatai_split <- FALSE
+    treesatai <- NULL
 
   } else {
     # ---- Mode données réelles ----
@@ -68,31 +70,56 @@ train_treesatai <- function(data_path   = NULL,
       stop("Chemin invalide")
     }
 
-    # Rechercher le fichier de parcelles
-    plot_files <- list.files(data_path, pattern = "\\.(gpkg|shp|geojson)$",
-                             recursive = TRUE, full.names = TRUE)
-    if (length(plot_files) > 0) {
-      plots <- sf::st_read(plot_files[1], quiet = TRUE)
-      cli::cli_alert_success("{nrow(plots)} parcelles charg\u00e9es")
-    }
+    # Détecter le format TreeSatAI (labels JSON multi-genres)
+    labels_file <- list.files(data_path, pattern = "multi_labels.*\\.json$",
+                               recursive = TRUE, full.names = TRUE)
 
-    # Rechercher les séries temporelles pré-extraites
-    ts_files <- list.files(data_path, pattern = "\\.(csv|parquet)$",
-                           recursive = TRUE, full.names = TRUE)
-    if (length(ts_files) > 0) {
-      ts_long <- readr::read_csv(ts_files[1], show_col_types = FALSE)
-      cli::cli_alert_success("S\u00e9ries temporelles charg\u00e9es : {nrow(ts_long)} lignes")
+    if (length(labels_file) > 0) {
+      # ---- Mode TreeSatAI (patches + labels JSON) ----
+      treesatai <- load_treesatai_data(data_path)
+      ts_long <- treesatai$ts_long
+      treesatai_split <- treesatai$split
+      use_treesatai_split <- !is.null(treesatai_split)
+
     } else {
-      # Extraire les séries temporelles depuis les rasters Sentinel-2
-      s2_dir <- list.dirs(data_path, recursive = FALSE)
-      s2_dir <- s2_dir[grep("sentinel|S2", s2_dir, ignore.case = TRUE)]
-      if (length(s2_dir) > 0) {
-        ts_long <- extract_s2_timeseries(plots, s2_dir[1])
+      # ---- Mode générique (plots shapefile + Sentinel-2 scenes) ----
+      use_treesatai_split <- FALSE
+      treesatai <- NULL
+
+      plot_files <- list.files(data_path, pattern = "\\.(gpkg|shp|geojson)$",
+                               recursive = TRUE, full.names = TRUE)
+      plots <- NULL
+      if (length(plot_files) > 0) {
+        plots <- sf::st_read(plot_files[1], quiet = TRUE)
+        cli::cli_alert_success("{nrow(plots)} parcelles charg\u00e9es")
+      }
+
+      ts_files <- list.files(data_path, pattern = "\\.(csv|parquet)$",
+                             recursive = TRUE, full.names = TRUE)
+      if (length(ts_files) > 0) {
+        ts_long <- readr::read_csv(ts_files[1], show_col_types = FALSE)
+        cli::cli_alert_success("S\u00e9ries temporelles charg\u00e9es : {nrow(ts_long)} lignes")
+      } else if (!is.null(plots)) {
+        s2_dir <- list.dirs(data_path, recursive = FALSE)
+        s2_dir <- s2_dir[grep("sentinel|S2", s2_dir, ignore.case = TRUE)]
+        if (length(s2_dir) > 0) {
+          ts_long <- extract_s2_timeseries(plots, s2_dir[1])
+        } else {
+          cli::cli_alert_danger("Aucune donn\u00e9e Sentinel-2 trouv\u00e9e dans {data_path}")
+          stop("Donn\u00e9es manquantes")
+        }
       } else {
-        cli::cli_alert_danger("Aucune donn\u00e9e Sentinel-2 trouv\u00e9e dans {data_path}")
-        stop("Donn\u00e9es manquantes")
+        cli::cli_alert_danger("Aucune parcelle ni s\u00e9rie temporelle trouv\u00e9e dans {data_path}")
+        stop("Donn\u00e9es manquantes : placez des .gpkg/.shp/.geojson ou des .csv/.parquet")
       }
     }
+  }
+
+  # Déterminer les noms de classes pour l'évaluation
+  eval_class_names <- if (!is.null(treesatai) && !is.null(treesatai$genus_names)) {
+    treesatai$genus_names
+  } else {
+    SPECIES$french
   }
 
   # ===========================================================================
@@ -138,9 +165,28 @@ train_treesatai <- function(data_path   = NULL,
   # ===========================================================================
   cli::cli_h2("\u00c9tape 4 \u2014 S\u00e9paration train/test")
 
-  split <- split_train_test(feature_matrix, target_col = "species_name")
-  train_data <- split$train
-  test_data  <- split$test
+  if (exists("use_treesatai_split") && isTRUE(use_treesatai_split)) {
+    # Utiliser le split prédéfini du dataset TreeSatAI
+    cli::cli_alert_info("Utilisation du split pr\u00e9d\u00e9fini TreeSatAI")
+    train_patches <- treesatai_split$train
+    test_patches  <- treesatai_split$test
+
+    train_data <- feature_matrix[feature_matrix$plot_id %in% train_patches, ]
+    test_data  <- feature_matrix[feature_matrix$plot_id %in% test_patches, ]
+
+    # Patchs non trouvés dans le split → ajouter au train
+    unmatched <- feature_matrix[!feature_matrix$plot_id %in% c(train_patches, test_patches), ]
+    if (nrow(unmatched) > 0) {
+      cli::cli_alert_warning("{nrow(unmatched)} patchs non trouv\u00e9s dans le split, ajout\u00e9s au train")
+      train_data <- rbind(train_data, unmatched)
+    }
+
+    cli::cli_alert_success("Train : {nrow(train_data)} / Test : {nrow(test_data)}")
+  } else {
+    split <- split_train_test(feature_matrix, target_col = "species_name")
+    train_data <- split$train
+    test_data  <- split$test
+  }
 
   feature_cols <- select_features(feature_matrix)
   cli::cli_text("  {length(feature_cols)} features s\u00e9lectionn\u00e9es")
@@ -164,7 +210,7 @@ train_treesatai <- function(data_path   = NULL,
     rf_eval <- evaluate_classification(
       y_true      = test_data$species_name,
       y_pred      = rf_preds$predicted_class,
-      class_names = SPECIES$french
+      class_names = eval_class_names
     )
 
     rf_importance <- get_variable_importance(rf_model)
@@ -200,7 +246,7 @@ train_treesatai <- function(data_path   = NULL,
         cnn_eval <- evaluate_classification(
           y_true      = test_data$species_name,
           y_pred      = cnn_preds,
-          class_names = SPECIES$french
+          class_names = eval_class_names
         )
 
         readr::write_csv(cnn_eval$per_class, file.path(output_dir, "cnn_per_class_metrics.csv"))
@@ -230,10 +276,11 @@ train_treesatai <- function(data_path   = NULL,
 
     eval_results <- if (!is.null(rf_eval)) rf_eval else cnn_eval
 
+    n_classes <- length(eval_class_names)
     plot_confusion_matrix(
       eval_results$confusion_matrix,
-      class_names = SPECIES$french,
-      title = "Matrice de confusion \u2014 20 esp\u00e8ces",
+      class_names = eval_class_names,
+      title = glue::glue("Matrice de confusion \u2014 {n_classes} classes"),
       save_path = file.path(figures_dir, "04_confusion_matrix.png")
     )
 
