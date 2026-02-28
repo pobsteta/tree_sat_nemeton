@@ -413,9 +413,28 @@ download_treesatai_hf <- function(dest_dir   = file.path(DATA_DIR, "treesatai"),
   # --- Post-traitement : extraction des zips si présents ---
   zip_files <- list.files(dest_dir, pattern = "\\.zip$", recursive = TRUE, full.names = TRUE)
   if (length(zip_files) > 0) {
-    cli::cli_h2("Extraction des archives")
-    for (zf in zip_files) {
-      .unzip_with_progress(zf, dirname(zf))
+    # Filtrer les zips déjà extraits (marqueur .extracted)
+    needs_extract <- vapply(zip_files, function(zf) {
+      marker <- paste0(zf, ".extracted")
+      !file.exists(marker)
+    }, logical(1))
+
+    if (any(needs_extract)) {
+      cli::cli_h2("Extraction des archives")
+      for (zf in zip_files[needs_extract]) {
+        ok <- .unzip_with_progress(zf, dirname(zf))
+        if (isTRUE(ok)) {
+          # Marquer comme extrait pour éviter de re-extraire
+          writeLines(format(Sys.time()), paste0(zf, ".extracted"))
+        }
+      }
+    }
+
+    skipped <- zip_files[!needs_extract]
+    if (length(skipped) > 0) {
+      for (zf in skipped) {
+        cli::cli_alert_info("D\u00e9j\u00e0 extrait : {basename(zf)}")
+      }
     }
   }
 

@@ -6,6 +6,7 @@ data/timeseries/
 *.jp2
 *.zip
 *.tar.gz
+*.extracted
 
 # Sorties
 output/models/*.rds
