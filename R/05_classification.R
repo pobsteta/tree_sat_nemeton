@@ -330,9 +330,16 @@ evaluate_classification <- function(y_true, y_pred, class_names = NULL) {
     ifelse(precision + recall == 0, 0, 2 * precision * recall / (precision + recall))
   )
 
-  # Kappa de Cohen
+  # Kappa de Cohen — s'assurer que la matrice est carrée
+  all_levels <- sort(unique(c(rownames(conf_mat), colnames(conf_mat))))
+  full_conf <- matrix(0L, nrow = length(all_levels), ncol = length(all_levels),
+                      dimnames = list(all_levels, all_levels))
+  cr <- intersect(rownames(conf_mat), all_levels)
+  cc <- intersect(colnames(conf_mat), all_levels)
+  full_conf[cr, cc] <- conf_mat[cr, cc]
+
   p_o <- OA
-  p_e <- sum(rowSums(conf_mat) * colSums(conf_mat)) / sum(conf_mat)^2
+  p_e <- sum(rowSums(full_conf) * colSums(full_conf)) / sum(full_conf)^2
   kappa <- (p_o - p_e) / (1 - p_e)
 
   # Macro-averaged metrics

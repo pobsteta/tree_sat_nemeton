@@ -312,7 +312,7 @@ plot_spectral_heatmap <- function(feature_matrix, save_path = NULL) {
   # Moyenne par espèce
   heatmap_data <- feature_matrix |>
     dplyr::group_by(species_name) |>
-    dplyr::summarise(dplyr::across(dplyr::all_of(ndvi_cols), mean, na.rm = TRUE),
+    dplyr::summarise(dplyr::across(dplyr::all_of(ndvi_cols), \(x) mean(x, na.rm = TRUE)),
                      .groups = "drop") |>
     tibble::column_to_rownames("species_name")
 
