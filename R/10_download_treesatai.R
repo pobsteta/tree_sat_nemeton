@@ -92,7 +92,9 @@ HF_RESOLVE_BASE <- "https://huggingface.co/datasets"
   return(FALSE)
 }
 
-# Extraction de zip avec progression visible dans RStudio
+# Extraction de zip avec progression visible dans RStudio Windows
+# L'extraction tourne dans un processus Rscript séparé,
+# pendant que le processus principal surveille le dossier de sortie.
 .unzip_with_progress <- function(zip_path, exdir) {
   zip_name <- basename(zip_path)
   zip_mb   <- round(file.info(zip_path)$size / 1024 / 1024, 1)
@@ -124,41 +126,78 @@ HF_RESOLVE_BASE <- "https://huggingface.co/datasets"
     })
   }
 
-  # Pour les gros zips, extraire par lots avec messages de progression
-  # (cli::cli_progress_bar ne s'affiche pas dans RStudio via source())
-  batch_size <- max(100, n_files %/% 20)
-  batches    <- split(file_list$Name, ceiling(seq_len(n_files) / batch_size))
-  extracted  <- 0L
-  t_start    <- Sys.time()
+  # Gros zips : extraction dans un processus R séparé + monitoring
+  dir.create(exdir, showWarnings = FALSE, recursive = TRUE)
+  existing_before <- length(list.files(exdir, recursive = TRUE))
+  t_start <- Sys.time()
 
-  for (i in seq_along(batches)) {
-    tryCatch({
-      unzip(zip_path, files = batches[[i]], exdir = exdir, overwrite = TRUE)
-      extracted <- extracted + length(batches[[i]])
-    }, error = function(e) {
-      cli::cli_alert_warning("  Erreur sur un lot : {e$message}")
-      extracted <<- extracted + length(batches[[i]])
-    })
+  # Écrire un mini-script R pour l'extraction
+  zip_abs   <- normalizePath(zip_path, winslash = "/")
+  exdir_abs <- normalizePath(exdir, winslash = "/", mustWork = FALSE)
+  script    <- tempfile(fileext = ".R")
+  done_file <- paste0(script, ".done")
 
-    # Afficher la progression à chaque lot
-    pct <- round(100 * extracted / n_files)
+  writeLines(c(
+    sprintf('unzip("%s", exdir = "%s", overwrite = TRUE)', zip_abs, exdir_abs),
+    sprintf('writeLines("OK", "%s")', normalizePath(done_file, winslash = "/", mustWork = FALSE))
+  ), script)
+
+  # Lancer Rscript en arrière-plan
+  rscript <- file.path(R.home("bin"),
+    if (.Platform$OS.type == "windows") "Rscript.exe" else "Rscript")
+
+  cli::cli_alert_info("  Lancement de l'extraction en arri\u00e8re-plan...")
+  flush.console()
+
+  system2(rscript, shQuote(script), wait = FALSE, stdout = FALSE, stderr = FALSE)
+
+  # Surveiller la progression en comptant les fichiers extraits
+  last_pct <- -1L
+
+  while (!file.exists(done_file)) {
+    Sys.sleep(5)
+
+    current_count <- tryCatch(
+      length(list.files(exdir, recursive = TRUE)),
+      error = function(e) existing_before
+    )
+    new_files <- current_count - existing_before
+    pct <- min(100L, round(100 * new_files / n_files))
     elapsed <- as.numeric(difftime(Sys.time(), t_start, units = "secs"))
-    if (extracted > 0 && elapsed > 0) {
-      speed <- round(extracted / elapsed)
-      remaining <- round((n_files - extracted) / speed)
-      mins <- remaining %/% 60
-      secs <- remaining %% 60
-      cli::cli_alert_info("  [{pct}%] {extracted}/{n_files} fichiers ({speed}/s, reste ~{mins}m{secs}s)")
-    } else {
-      cli::cli_alert_info("  [{pct}%] {extracted}/{n_files} fichiers")
+
+    # Afficher uniquement quand le % change (tous les ~5%)
+    if (pct > last_pct && new_files > 0 && elapsed > 0) {
+      speed <- round(new_files / elapsed)
+      if (speed > 0) {
+        remaining <- round((n_files - new_files) / speed)
+        mins <- remaining %/% 60
+        secs <- remaining %% 60
+        cli::cli_alert_info("  [{pct}%] {new_files}/{n_files} fichiers ({speed}/s, reste ~{mins}m{secs}s)")
+      } else {
+        cli::cli_alert_info("  [{pct}%] {new_files}/{n_files} fichiers")
+      }
+      flush.console()
+      last_pct <- pct
     }
-    flush.console()
+
+    # Timeout de sécurité : 2h max
+    if (elapsed > 7200) {
+      cli::cli_alert_danger("  Timeout apr\u00e8s 2h d'extraction")
+      break
+    }
   }
 
+  # Nettoyage
+  unlink(c(script, done_file), force = TRUE)
+
+  final_count <- tryCatch(
+    length(list.files(exdir, recursive = TRUE)) - existing_before,
+    error = function(e) 0
+  )
   elapsed_total <- round(as.numeric(difftime(Sys.time(), t_start, units = "secs")))
   mins <- elapsed_total %/% 60
   secs <- elapsed_total %% 60
-  cli::cli_alert_success("  {zip_name} extrait ({extracted} fichiers en {mins}m{secs}s)")
+  cli::cli_alert_success("  {zip_name} extrait ({final_count} fichiers en {mins}m{secs}s)")
   invisible(TRUE)
 }
 
