@@ -7,6 +7,38 @@
 # Configuration chargée via le package
 # ggplot2 et patchwork sont des dépendances du package (Imports)
 
+# --- Palette de couleurs adaptative ------------------------------------------
+
+# Génère une palette nommée par species_name (fonctionne avec noms latins,
+# français, ou genres). Réutilise SPECIES_COLORS si les noms correspondent,
+# sinon génère une palette qualitative.
+.get_species_palette <- function(species_names) {
+  species_names <- sort(unique(species_names))
+  n <- length(species_names)
+
+  # Tenter de réutiliser SPECIES_COLORS (clés = noms latins)
+  if (all(species_names %in% names(SPECIES_COLORS))) {
+    return(SPECIES_COLORS[species_names])
+  }
+
+  # Tenter correspondance via noms français
+  french_match <- match(species_names, SPECIES$french)
+  if (!any(is.na(french_match))) {
+    cols <- SPECIES_COLORS[SPECIES$latin[french_match]]
+    names(cols) <- species_names
+    return(cols)
+  }
+
+  # Fallback : palette qualitative large
+  if (n <= 12) {
+    pal <- RColorBrewer::brewer.pal(max(3, n), "Set3")[seq_len(n)]
+  } else {
+    pal <- grDevices::hcl.colors(n, palette = "Dark 3")
+  }
+  names(pal) <- species_names
+  pal
+}
+
 # --- Profils phénologiques par espèce ----------------------------------------
 
 #' Tracé des profils phénologiques NDVI pour toutes les espèces
@@ -26,20 +58,23 @@ plot_phenological_profiles <- function(ts_long, index_name = "NDVI",
     ) |>
     dplyr::mutate(doy = as.numeric(format(date, "%j")))
 
+  sp_colors <- .get_species_palette(profiles$species_name)
+  n_species <- length(sp_colors)
+
   p <- ggplot(profiles, aes(x = doy, y = mean_val, color = species_name)) +
     geom_ribbon(aes(ymin = mean_val - sd_val, ymax = mean_val + sd_val,
                     fill = species_name), alpha = 0.1, color = NA) +
     geom_line(linewidth = 0.8) +
-    scale_color_manual(values = SPECIES_COLORS, name = "Espèce") +
-    scale_fill_manual(values = SPECIES_COLORS, guide = "none") +
+    scale_color_manual(values = sp_colors, name = "Esp\u00e8ce") +
+    scale_fill_manual(values = sp_colors, guide = "none") +
     scale_x_continuous(
       breaks = c(1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335),
-      labels = c("Jan", "Fév", "Mar", "Avr", "Mai", "Jun",
-                 "Jul", "Aoû", "Sep", "Oct", "Nov", "Déc")
+      labels = c("Jan", "F\u00e9v", "Mar", "Avr", "Mai", "Jun",
+                 "Jul", "Ao\u00fb", "Sep", "Oct", "Nov", "D\u00e9c")
     ) +
     labs(
-      title = paste("Profils phénologiques —", index_name),
-      subtitle = "Moyenne ± écart-type par espèce (TreeSatAI-TS, 20 espèces)",
+      title = paste("Profils ph\u00e9nologiques \u2014", index_name),
+      subtitle = glue::glue("Moyenne \u00b1 \u00e9cart-type par esp\u00e8ce ({n_species} classes)"),
       x = "Mois",
       y = index_name
     ) +
@@ -54,7 +89,7 @@ plot_phenological_profiles <- function(ts_long, index_name = "NDVI",
   if (!is.null(save_path)) {
     ggsave(save_path, p, width = VIS_PARAMS$width_cm, height = VIS_PARAMS$height_cm,
            units = "cm", dpi = VIS_PARAMS$dpi)
-    log_msg("Profils phénologiques sauvegardés : {save_path}", level = "success")
+    log_msg("Profils ph\u00e9nologiques sauvegard\u00e9s : {save_path}", level = "success")
   }
 
   p
@@ -65,31 +100,39 @@ plot_phenological_profiles <- function(ts_long, index_name = "NDVI",
 #' @param save_path Chemin de sauvegarde
 #' @return Objet ggplot
 plot_profiles_by_type <- function(ts_long, save_path = NULL) {
-  # Ajouter le type d'essence
+  # Ajouter le type d'essence — tenter la jointure, sinon deviner
+  species_info <- SPECIES |> dplyr::select(french, type, phenologie)
   ts_typed <- ts_long |>
-    dplyr::left_join(
-      SPECIES |> dplyr::select(french, type, phenologie),
-      by = c("species_name" = "french")
-    )
+    dplyr::left_join(species_info, by = c("species_name" = "french"))
+
+  # Si la jointure n'a rien donné (noms de genres), deviner le type
+  if (all(is.na(ts_typed$type))) {
+    coniferes <- c("Pin sylvestre", "\u00c9pic\u00e9a commun", "Sapin pectin\u00e9",
+                    "Douglas", "M\u00e9l\u00e8ze d'Europe")
+    ts_typed$type <- ifelse(ts_typed$species_name %in% coniferes, "r\u00e9sineux", "feuillu")
+    caducs <- c("H\u00eatre", "Ch\u00eane p\u00e9doncul\u00e9", "Bouleau verruqueux",
+                "Fr\u00eane commun", "\u00c9rable sycomore", "Charme", "Peupliers",
+                "Aulne", "Tilleul", "Prunus", "M\u00e9l\u00e8ze d'Europe", "Cleared")
+    ts_typed$phenologie <- ifelse(ts_typed$species_name %in% caducs, "caducifoli\u00e9", "sempervirent")
+  }
 
   profiles <- ts_typed |>
     dplyr::group_by(species_name, type, phenologie, date) |>
-    dplyr::summarise(
-      mean_ndvi = mean(NDVI, na.rm = TRUE),
-      .groups = "drop"
-    ) |>
+    dplyr::summarise(mean_ndvi = mean(NDVI, na.rm = TRUE), .groups = "drop") |>
     dplyr::mutate(doy = as.numeric(format(date, "%j")))
+
+  sp_colors <- .get_species_palette(profiles$species_name)
 
   p <- ggplot(profiles, aes(x = doy, y = mean_ndvi, color = species_name)) +
     geom_line(linewidth = 0.7, alpha = 0.8) +
     facet_grid(type ~ phenologie, scales = "free_y") +
-    scale_color_manual(values = SPECIES_COLORS, name = "Espèce") +
+    scale_color_manual(values = sp_colors, name = "Esp\u00e8ce") +
     scale_x_continuous(
       breaks = c(1, 91, 182, 274),
       labels = c("Jan", "Avr", "Jul", "Oct")
     ) +
     labs(
-      title = "Profils phénologiques par type et régime foliaire",
+      title = "Profils ph\u00e9nologiques par type et r\u00e9gime foliaire",
       x = "Mois", y = "NDVI"
     ) +
     theme_minimal(base_size = VIS_PARAMS$font_size) +
@@ -102,7 +145,7 @@ plot_profiles_by_type <- function(ts_long, save_path = NULL) {
 
   if (!is.null(save_path)) {
     ggsave(save_path, p, width = 28, height = 20, units = "cm", dpi = VIS_PARAMS$dpi)
-    log_msg("Profils par type sauvegardés : {save_path}", level = "success")
+    log_msg("Profils par type sauvegard\u00e9s : {save_path}", level = "success")
   }
 
   p
@@ -120,19 +163,28 @@ plot_confusion_matrix <- function(conf_matrix, class_names = NULL,
                                    title = "Matrice de confusion",
                                    save_path = NULL) {
   if (is.null(class_names)) {
-    class_names <- rownames(conf_matrix)
+    class_names <- sort(unique(c(rownames(conf_matrix), colnames(conf_matrix))))
   }
 
+  # S'assurer que la matrice couvre toutes les classes (certaines peuvent manquer)
+  full_mat <- matrix(0L, nrow = length(class_names), ncol = length(class_names),
+                     dimnames = list(class_names, class_names))
+  common_rows <- intersect(rownames(conf_matrix), class_names)
+  common_cols <- intersect(colnames(conf_matrix), class_names)
+  full_mat[common_rows, common_cols] <- conf_matrix[common_rows, common_cols]
+
   # Normaliser par ligne (recall par classe)
-  conf_norm <- sweep(conf_matrix, 1, rowSums(conf_matrix), "/")
+  row_sums <- rowSums(full_mat)
+  conf_norm <- sweep(full_mat, 1, ifelse(row_sums == 0, 1, row_sums), "/")
   conf_norm[is.nan(conf_norm)] <- 0
 
   # Conversion en data.frame long
   conf_df <- expand.grid(
     Reference  = class_names,
-    Prediction = class_names
+    Prediction = class_names,
+    stringsAsFactors = FALSE
   )
-  conf_df$Count    <- as.vector(conf_matrix)
+  conf_df$Count    <- as.vector(full_mat)
   conf_df$Percent  <- as.vector(conf_norm) * 100
 
   # Labels
@@ -141,6 +193,11 @@ plot_confusion_matrix <- function(conf_matrix, class_names = NULL,
     paste0(conf_df$Count, "\n(", round(conf_df$Percent, 1), "%)"),
     ""
   )
+
+  # OA sur les classes présentes
+  diag_sum <- sum(diag(full_mat))
+  total    <- sum(full_mat)
+  oa_pct   <- if (total > 0) round(diag_sum / total * 100, 1) else 0
 
   p <- ggplot(conf_df, aes(x = Prediction, y = Reference, fill = Percent)) +
     geom_tile(color = "white", linewidth = 0.5) +
@@ -153,9 +210,9 @@ plot_confusion_matrix <- function(conf_matrix, class_names = NULL,
     scale_x_discrete(position = "top") +
     labs(
       title = title,
-      subtitle = paste0("OA = ", round(sum(diag(conf_matrix)) / sum(conf_matrix) * 100, 1), "%"),
-      x = "Prédiction",
-      y = "Référence"
+      subtitle = paste0("OA = ", oa_pct, "%"),
+      x = "Pr\u00e9diction",
+      y = "R\u00e9f\u00e9rence"
     ) +
     theme_minimal(base_size = 8) +
     theme(
@@ -302,7 +359,18 @@ plot_deciduous_vs_evergreen <- function(ts_long, save_path = NULL) {
     dplyr::left_join(
       SPECIES |> dplyr::select(french, phenologie),
       by = c("species_name" = "french")
-    ) |>
+    )
+
+  # Si la jointure n'a rien donné (noms de genres), deviner la phénologie
+  if (all(is.na(ts_typed$phenologie))) {
+    caducs <- c("H\u00eatre", "Ch\u00eane p\u00e9doncul\u00e9", "Bouleau verruqueux",
+                "Fr\u00eane commun", "\u00c9rable sycomore", "Charme", "Peupliers",
+                "Aulne", "Tilleul", "Prunus", "M\u00e9l\u00e8ze d'Europe", "Cleared")
+    ts_typed$phenologie <- ifelse(ts_typed$species_name %in% caducs,
+                                   "caducifoli\u00e9", "sempervirent")
+  }
+
+  ts_typed <- ts_typed |>
     dplyr::mutate(doy = as.numeric(format(date, "%j")))
 
   # Profils moyens par type
