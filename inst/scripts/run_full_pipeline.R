@@ -30,6 +30,12 @@ remotes::install_github(
 
 library(treesatnemeton)
 
+# Chemins locaux (ne pas dépendre des globales internes du package)
+PROJECT_ROOT <- if (requireNamespace("here", quietly = TRUE)) here::here() else getwd()
+DATA_DIR     <- file.path(PROJECT_ROOT, "data")
+OUTPUT_DIR   <- file.path(PROJECT_ROOT, "output")
+MODELS_DIR   <- file.path(OUTPUT_DIR, "models")
+
 # --- 1. Télécharger le dataset TreeSatAI depuis HuggingFace -----------------
 # Labels + split + geojson (~10 Mo) — indispensable
 # sentinel-ts (~30 Go) — séries temporelles S1+S2 sur 1 an complet
@@ -49,7 +55,7 @@ cat("Test             :", length(split$test), "patchs\n\n")
 
 # --- 2. Entraîner un modèle sur les données réelles -------------------------
 # Supprime l'ancien modèle synthétique s'il existe
-old_model <- file.path(.get_project_root(), "output", "models", "treesatai_rf.rds")
+old_model <- file.path(MODELS_DIR, "treesatai_rf.rds")
 if (file.exists(old_model)) {
   file.remove(old_model)
   cat("Ancien modèle synthétique supprimé.\n")
