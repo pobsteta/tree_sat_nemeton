@@ -601,7 +601,7 @@ load_treesatai_data <- function(data_path) {
 
   dominant$species_code <- vapply(dominant$genus, function(g) {
     info <- GENUS_MAP[[g]]
-    if (!is.null(info) && !is.na(info$code)) info$code else 0L
+    if (!is.null(info) && !is.na(info$code)) as.integer(info$code) else 0L
   }, integer(1))
 
   genus_names <- sort(unique(dominant$species_name))
