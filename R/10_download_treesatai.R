@@ -23,6 +23,75 @@ HF_REPO_ID <- "IGNF/TreeSatAI-Time-Series"
 HF_API_BASE <- "https://huggingface.co/api/datasets"
 HF_RESOLVE_BASE <- "https://huggingface.co/datasets"
 
+# Téléchargement robuste avec reprise pour gros fichiers
+# Utilise curl -C - pour reprendre un téléchargement interrompu
+.download_with_resume <- function(url, dest_file, file_name, size_mb,
+                                   max_retries = 5) {
+  use_curl <- nzchar(Sys.which("curl"))
+  partial  <- paste0(dest_file, ".partial")
+
+  for (attempt in seq_len(max_retries)) {
+    if (attempt > 1) {
+      wait <- min(2^attempt, 30)
+      cli::cli_alert_warning("  Tentative {attempt}/{max_retries} dans {wait}s...")
+      Sys.sleep(wait)
+    }
+
+    tryCatch({
+      if (use_curl) {
+        # curl avec -C - = reprise automatique, -L = suivre redirections
+        # --retry = retries internes curl, --connect-timeout = timeout connexion
+        res <- system2("curl", c(
+          "-L", "-C", "-",
+          "--retry", "3",
+          "--retry-delay", "5",
+          "--connect-timeout", "30",
+          "--max-time", "0",
+          "-o", shQuote(partial),
+          shQuote(url)
+        ), stdout = TRUE, stderr = TRUE)
+
+        exit_code <- attr(res, "status")
+        if (is.null(exit_code)) exit_code <- 0L
+
+        if (exit_code == 0 && file.exists(partial)) {
+          # Vérifier que le fichier partiel a une taille raisonnable
+          actual_mb <- round(file.info(partial)$size / 1024 / 1024, 1)
+          if (size_mb > 0 && actual_mb < size_mb * 0.95) {
+            cli::cli_alert_warning("  Incomplet : {actual_mb}/{size_mb} Mo")
+            next
+          }
+          file.rename(partial, dest_file)
+          cli::cli_alert_success("  {file_name} OK ({actual_mb} Mo)")
+          return(TRUE)
+        } else {
+          msg <- paste(tail(res, 3), collapse = " ")
+          cli::cli_alert_warning("  curl exit {exit_code}: {msg}")
+        }
+      } else {
+        # Fallback : download.file avec timeout augmenté
+        old_timeout <- getOption("timeout")
+        options(timeout = max(3600, size_mb * 2))
+        on.exit(options(timeout = old_timeout), add = TRUE)
+        download.file(url, dest_file, mode = "wb", quiet = FALSE)
+        cli::cli_alert_success("  {file_name} OK")
+        return(TRUE)
+      }
+    }, error = function(e) {
+      cli::cli_alert_warning("  Erreur : {e$message}")
+    })
+  }
+
+  # Toutes les tentatives échouées
+  cli::cli_alert_danger("  Echec apr\u00e8s {max_retries} tentatives pour {file_name}")
+  if (file.exists(partial)) {
+    actual_mb <- round(file.info(partial)$size / 1024 / 1024, 1)
+    cli::cli_alert_info("  Fichier partiel conserv\u00e9 ({actual_mb} Mo) : {partial}")
+    cli::cli_alert_info("  Relancez download_treesatai_hf() pour reprendre")
+  }
+  return(FALSE)
+}
+
 #' Télécharger le dataset TreeSatAI-Time-Series depuis HuggingFace
 #'
 #' Télécharge les données du dataset IGNF/TreeSatAI-Time-Series hébergé
@@ -130,8 +199,17 @@ download_treesatai_hf <- function(dest_dir   = file.path(DATA_DIR, "treesatai"),
       dir.create(dirname(dest_file), showWarnings = FALSE, recursive = TRUE)
 
       if (file.exists(dest_file) && !overwrite) {
-        cli::cli_alert_info("  D\u00e9j\u00e0 pr\u00e9sent : {file_name}")
-        next
+        # Vérifier que le fichier n'est pas tronqué
+        actual_size <- file.info(dest_file)$size
+        if (file_size > 0 && actual_size >= file_size * 0.95) {
+          cli::cli_alert_info("  D\u00e9j\u00e0 pr\u00e9sent : {file_name}")
+          next
+        } else if (file_size > 0) {
+          cli::cli_alert_warning("  {file_name} incomplet ({round(actual_size/1024/1024,1)}/{round(file_size/1024/1024,1)} Mo), reprise...")
+        } else {
+          cli::cli_alert_info("  D\u00e9j\u00e0 pr\u00e9sent : {file_name}")
+          next
+        }
       }
 
       # URL de téléchargement direct
@@ -140,12 +218,8 @@ download_treesatai_hf <- function(dest_dir   = file.path(DATA_DIR, "treesatai"),
       size_mb <- round(file_size / 1024 / 1024, 1)
       cli::cli_alert_info("  T\u00e9l\u00e9chargement : {file_name} ({size_mb} Mo)")
 
-      tryCatch({
-        download.file(dl_url, dest_file, mode = "wb", quiet = TRUE)
-        cli::cli_alert_success("  {file_name} OK")
-      }, error = function(e) {
-        cli::cli_alert_danger("  \u00c9chec : {e$message}")
-      })
+      # Pour les gros fichiers (> 100 Mo), utiliser curl avec reprise
+      dl_ok <- .download_with_resume(dl_url, dest_file, file_name, size_mb)
     }
   }
 
