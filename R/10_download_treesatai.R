@@ -533,6 +533,8 @@ load_treesatai_split <- function(split_dir = NULL) {
 # ==============================================================================
 
 # Table de correspondance genre → nom français + code SPECIES
+# Les genres sans correspondance SPECIES utilisent le code du genre le plus
+# similaire pour la génération de profils synthétiques
 GENUS_MAP <- list(
   Fagus        = list(french = "H\u00eatre",                code = 5),
   Quercus      = list(french = "Ch\u00eane p\u00e9doncul\u00e9", code = 1),
@@ -548,12 +550,16 @@ GENUS_MAP <- list(
   Populus      = list(french = "Peupliers",                 code = 11),
   Robinia      = list(french = "Robinier faux-acacia",      code = 12),
   Castanea     = list(french = "Ch\u00e2taignier",          code = 6),
-  Alnus        = list(french = "Aulne",                     code = NA),
-  Tilia        = list(french = "Tilleul",                   code = NA),
-  Sorbus       = list(french = "Sorbier",                   code = NA),
-  Salix        = list(french = "Saule",                     code = NA),
-  Ulmus        = list(french = "Orme",                      code = NA)
+  Alnus        = list(french = "Aulne",                     code = 8),   # similaire Bouleau
+  Tilia        = list(french = "Tilleul",                   code = 10),  # similaire Érable
+  Prunus       = list(french = "Prunus",                    code = 6),   # similaire Châtaignier
+  Sorbus       = list(french = "Sorbier",                   code = 9),   # similaire Frêne
+  Salix        = list(french = "Saule",                     code = 11),  # similaire Peuplier
+  Ulmus        = list(french = "Orme",                      code = 7)    # similaire Charme
 )
+
+# Classes non forestières à exclure de l'entraînement
+NON_TREE_CLASSES <- c("Cleared", "cleared", "NonForest", "non_forest", "Water", "Urban")
 
 # ==============================================================================
 # Chargement complet des données TreeSatAI pour le pipeline
@@ -603,6 +609,15 @@ load_treesatai_data <- function(data_path) {
     info <- GENUS_MAP[[g]]
     if (!is.null(info) && !is.na(info$code)) as.integer(info$code) else 0L
   }, integer(1))
+
+  # Filtrer les classes non forestières (Cleared, etc.)
+  non_tree <- dominant$species_name %in% NON_TREE_CLASSES | dominant$genus %in% NON_TREE_CLASSES
+  if (any(non_tree)) {
+    n_removed <- sum(non_tree)
+    removed_names <- paste(unique(dominant$species_name[non_tree]), collapse = ", ")
+    cli::cli_alert_warning("Exclusion de {n_removed} patchs non forestiers ({removed_names})")
+    dominant <- dominant[!non_tree, ]
+  }
 
   genus_names <- sort(unique(dominant$species_name))
   cli::cli_alert_success("{nrow(dominant)} patchs, {length(genus_names)} genres : {paste(genus_names, collapse = ', ')}")
@@ -778,6 +793,12 @@ load_treesatai_data <- function(data_path) {
   sp_names <- rep(dominant$species_name, each = n_dates)
   dates_vec <- rep(target_dates, times = n_patches)
 
+  # Hash du nom de genre → offset pour varier les profils entre genres
+  # partageant le même species_code proxy
+  genus_offset <- as.integer(
+    vapply(dominant$species_name, function(g) sum(utf8ToInt(g)), numeric(1))
+  )
+
   # Pré-allouer la matrice de bandes (beaucoup plus rapide que 50k data.frames)
   band_mat <- matrix(0, nrow = total_rows, ncol = 10)
 
@@ -793,7 +814,8 @@ load_treesatai_data <- function(data_path) {
     sp_code <- dominant$species_code[i]
     if (sp_code == 0 || is.na(sp_code)) sp_code <- 1L
 
-    set.seed(sp_code * 1000L + i)
+    # Graine unique par genre + patch (même code proxy → profils distincts grâce à l'offset)
+    set.seed(sp_code * 1000L + genus_offset[i] + i)
 
     # Simuler NDVI via le moteur existant
     ndvi <- simulate_species_ndvi(sp_code, target_dates)
