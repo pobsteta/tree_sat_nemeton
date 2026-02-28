@@ -242,6 +242,10 @@ extract_pixel_features <- function(cube_list, dates, block_size = 100) {
 
   # --- Extraction des features pour chaque pixel valide ---
   log_msg("  Extraction des features...")
+
+  # Labels DOY pour les dates cibles (cohérent avec build_feature_matrix)
+  doy_labels <- format(target_dates, "%j")
+
   pb <- cli::cli_progress_bar("Pixels", total = n_valid)
 
   feature_list <- vector("list", n_valid)
@@ -267,18 +271,32 @@ extract_pixel_features <- function(cube_list, dates, block_size = 100) {
 
     features <- c()
 
-    # 1. Statistiques des bandes brutes
+    # 1. Bandes brutes : série temporelle + statistiques
     for (band in bands) {
-      stats <- calc_temporal_stats(bands_ts[[band]], prefix = band)
+      vals <- bands_ts[[band]]
+
+      # Série temporelle brute par DOY (comme dans build_feature_matrix)
+      feat_names <- paste0(band, "_d", doy_labels)
+      features <- c(features, setNames(vals, feat_names))
+
+      # Statistiques temporelles
+      stats <- calc_temporal_stats(vals, prefix = band)
       features <- c(features, stats)
     }
 
-    # 2. Indices spectraux
+    # 2. Indices spectraux : série temporelle + statistiques
     if (all(c("B08", "B04", "B02", "B03", "B05", "B11", "B12") %in% names(bands_ts))) {
       indices <- calc_all_indices(bands_ts)
 
       for (idx_name in names(indices)) {
-        stats <- calc_temporal_stats(indices[[idx_name]], prefix = idx_name)
+        idx_vals <- indices[[idx_name]]
+
+        # Série temporelle brute par DOY
+        idx_feat_names <- paste0(idx_name, "_d", doy_labels[seq_along(idx_vals)])
+        features <- c(features, setNames(idx_vals, idx_feat_names))
+
+        # Statistiques temporelles
+        stats <- calc_temporal_stats(idx_vals, prefix = idx_name)
         features <- c(features, stats)
       }
 
