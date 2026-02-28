@@ -92,33 +92,73 @@ HF_RESOLVE_BASE <- "https://huggingface.co/datasets"
   return(FALSE)
 }
 
-# Extraction de zip avec progression visible dans RStudio Windows
-# L'extraction tourne dans un processus Rscript séparé,
-# pendant que le processus principal surveille le dossier de sortie.
+# Extraction de zip avec progression — compatible Windows (ZIP64, chemins longs)
+# R unzip() ne supporte pas les ZIP > 4 Go sur Windows.
+# Stratégie : 7z > tar (bsdtar Windows 10+) > PowerShell > R unzip (fallback)
 .unzip_with_progress <- function(zip_path, exdir) {
   zip_name <- basename(zip_path)
   zip_mb   <- round(file.info(zip_path)$size / 1024 / 1024, 1)
+  is_large <- file.info(zip_path)$size > 500 * 1024 * 1024  # > 500 Mo
 
-  # Lister le contenu du zip
-  file_list <- tryCatch(
-    unzip(zip_path, list = TRUE),
-    error = function(e) {
-      cli::cli_alert_danger("Impossible de lire {zip_name} : {e$message}")
-      return(NULL)
-    }
-  )
-  if (is.null(file_list)) return(invisible(FALSE))
+  dir.create(exdir, showWarnings = FALSE, recursive = TRUE)
 
-  n_files   <- nrow(file_list)
-  total_mb  <- round(sum(file_list$Length) / 1024 / 1024, 1)
+  # Compter les fichiers dans le zip (via le listing R, ok même pour gros zips)
+  n_files <- tryCatch({
+    fl <- unzip(zip_path, list = TRUE)
+    total_mb <- round(sum(fl$Length) / 1024 / 1024, 1)
+    cli::cli_alert_info("Extraction : {zip_name} ({zip_mb} Mo) \u2192 {nrow(fl)} fichiers ({total_mb} Mo)")
+    nrow(fl)
+  }, error = function(e) {
+    cli::cli_alert_info("Extraction : {zip_name} ({zip_mb} Mo)")
+    0L
+  })
+  flush.console()
 
-  cli::cli_alert_info("Extraction : {zip_name} ({zip_mb} Mo) \u2192 {n_files} fichiers ({total_mb} Mo)")
-
-  # Pour les petits zips (< 500 fichiers), extraire d'un coup
-  if (n_files <= 500) {
+  # Pour les petits zips : extraction directe
+  if (!is_large) {
     tryCatch({
-      unzip(zip_path, exdir = exdir)
-      cli::cli_alert_success("  {zip_name} extrait ({n_files} fichiers)")
+      unzip(zip_path, exdir = exdir, overwrite = TRUE)
+      n_out <- length(list.files(exdir, recursive = TRUE))
+      cli::cli_alert_success("  {zip_name} extrait ({n_out} fichiers)")
+      return(invisible(TRUE))
+    }, error = function(e) {
+      cli::cli_alert_danger("  Echec unzip : {e$message}")
+      return(invisible(FALSE))
+    })
+  }
+
+  # --- Gros zips : outil externe avec monitoring ---
+  # Chemins absolus Windows-safe (guillemets, pas de short names)
+  zip_win <- normalizePath(zip_path, mustWork = TRUE)
+  exdir_win <- normalizePath(exdir, mustWork = TRUE)
+  existing_before <- length(list.files(exdir, recursive = TRUE))
+
+  # Choisir le meilleur outil disponible
+  tool <- .find_unzip_tool()
+  cli::cli_alert_info("  Outil d'extraction : {tool$name}")
+  flush.console()
+
+  # Construire la commande
+  if (tool$name == "7z") {
+    cmd <- tool$path
+    args <- c("x", "-y", paste0("-o", exdir_win), zip_win)
+  } else if (tool$name == "tar") {
+    cmd <- tool$path
+    args <- c("-xf", zip_win, "-C", exdir_win)
+  } else if (tool$name == "powershell") {
+    cmd <- tool$path
+    args <- c("-NoProfile", "-Command",
+      sprintf('Expand-Archive -Path "%s" -DestinationPath "%s" -Force',
+              zip_win, exdir_win))
+  } else {
+    # Fallback R unzip (peut échouer sur ZIP64)
+    cli::cli_alert_warning("  Aucun outil externe trouv\u00e9, utilisation de R unzip()...")
+    cli::cli_alert_warning("  Pour les ZIP > 4 Go, installez 7-Zip : https://7-zip.org/")
+    flush.console()
+    tryCatch({
+      unzip(zip_path, exdir = exdir, overwrite = TRUE)
+      n_out <- length(list.files(exdir, recursive = TRUE))
+      cli::cli_alert_success("  {zip_name} extrait ({n_out} fichiers)")
       return(invisible(TRUE))
     }, error = function(e) {
       cli::cli_alert_danger("  Echec : {e$message}")
@@ -126,79 +166,117 @@ HF_RESOLVE_BASE <- "https://huggingface.co/datasets"
     })
   }
 
-  # Gros zips : extraction dans un processus R séparé + monitoring
-  dir.create(exdir, showWarnings = FALSE, recursive = TRUE)
-  existing_before <- length(list.files(exdir, recursive = TRUE))
+  # Lancer en arrière-plan et surveiller
   t_start <- Sys.time()
+  log_file <- tempfile(fileext = ".log")
 
-  # Écrire un mini-script R pour l'extraction
-  zip_abs   <- normalizePath(zip_path, winslash = "/")
-  exdir_abs <- normalizePath(exdir, winslash = "/", mustWork = FALSE)
-  script    <- tempfile(fileext = ".R")
-  done_file <- paste0(script, ".done")
+  system2(cmd, args, wait = FALSE, stdout = log_file, stderr = log_file)
 
-  writeLines(c(
-    sprintf('unzip("%s", exdir = "%s", overwrite = TRUE)', zip_abs, exdir_abs),
-    sprintf('writeLines("OK", "%s")', normalizePath(done_file, winslash = "/", mustWork = FALSE))
-  ), script)
-
-  # Lancer Rscript en arrière-plan
-  rscript <- file.path(R.home("bin"),
-    if (.Platform$OS.type == "windows") "Rscript.exe" else "Rscript")
-
-  cli::cli_alert_info("  Lancement de l'extraction en arri\u00e8re-plan...")
+  cli::cli_alert_info("  Extraction en cours...")
   flush.console()
 
-  system2(rscript, shQuote(script), wait = FALSE, stdout = FALSE, stderr = FALSE)
-
-  # Surveiller la progression en comptant les fichiers extraits
   last_pct <- -1L
+  stall_count <- 0L
+  last_count <- existing_before
 
-  while (!file.exists(done_file)) {
+  repeat {
     Sys.sleep(5)
 
     current_count <- tryCatch(
       length(list.files(exdir, recursive = TRUE)),
-      error = function(e) existing_before
+      error = function(e) last_count
     )
     new_files <- current_count - existing_before
-    pct <- min(100L, round(100 * new_files / n_files))
     elapsed <- as.numeric(difftime(Sys.time(), t_start, units = "secs"))
 
-    # Afficher uniquement quand le % change (tous les ~5%)
-    if (pct > last_pct && new_files > 0 && elapsed > 0) {
+    # Détecter si l'extraction a fini (plus de nouveaux fichiers + processus terminé)
+    if (current_count == last_count) {
+      stall_count <- stall_count + 1L
+    } else {
+      stall_count <- 0L
+      last_count <- current_count
+    }
+
+    # Afficher la progression
+    if (n_files > 0) {
+      pct <- min(100L, round(100 * new_files / n_files))
+    } else {
+      pct <- 0L
+    }
+
+    if ((pct > last_pct || stall_count == 0) && new_files > 0 && elapsed > 0) {
       speed <- round(new_files / elapsed)
-      if (speed > 0) {
-        remaining <- round((n_files - new_files) / speed)
+      if (speed > 0 && n_files > 0) {
+        remaining <- max(0, round((n_files - new_files) / speed))
         mins <- remaining %/% 60
         secs <- remaining %% 60
         cli::cli_alert_info("  [{pct}%] {new_files}/{n_files} fichiers ({speed}/s, reste ~{mins}m{secs}s)")
       } else {
-        cli::cli_alert_info("  [{pct}%] {new_files}/{n_files} fichiers")
+        cli::cli_alert_info("  {new_files} fichiers extraits...")
       }
       flush.console()
       last_pct <- pct
     }
 
-    # Timeout de sécurité : 2h max
+    # Fin : plus de mouvement depuis 30s (6 checks) = processus terminé
+    if (stall_count >= 6 && new_files > 0) break
+
+    # Timeout de sécurité : 2h
     if (elapsed > 7200) {
       cli::cli_alert_danger("  Timeout apr\u00e8s 2h d'extraction")
       break
     }
   }
 
-  # Nettoyage
-  unlink(c(script, done_file), force = TRUE)
+  # Vérifier les erreurs dans le log
+  if (file.exists(log_file)) {
+    log_content <- tryCatch(readLines(log_file, warn = FALSE), error = function(e) "")
+    errors <- grep("error|erreur|fail|cannot|impossible", log_content,
+                    ignore.case = TRUE, value = TRUE)
+    if (length(errors) > 0) {
+      cli::cli_alert_warning("  Avertissements extraction :")
+      for (err in utils::head(errors, 5)) cli::cli_alert_warning("    {err}")
+    }
+    unlink(log_file)
+  }
 
-  final_count <- tryCatch(
-    length(list.files(exdir, recursive = TRUE)) - existing_before,
-    error = function(e) 0
-  )
+  final_count <- length(list.files(exdir, recursive = TRUE)) - existing_before
   elapsed_total <- round(as.numeric(difftime(Sys.time(), t_start, units = "secs")))
   mins <- elapsed_total %/% 60
   secs <- elapsed_total %% 60
   cli::cli_alert_success("  {zip_name} extrait ({final_count} fichiers en {mins}m{secs}s)")
   invisible(TRUE)
+}
+
+# Trouver le meilleur outil d'extraction disponible
+.find_unzip_tool <- function() {
+  # 1. 7-Zip (le plus fiable pour gros ZIP sur Windows)
+  if (.Platform$OS.type == "windows") {
+    sz_paths <- c(
+      Sys.which("7z"),
+      "C:/Program Files/7-Zip/7z.exe",
+      "C:/Program Files (x86)/7-Zip/7z.exe"
+    )
+    for (p in sz_paths) {
+      if (nzchar(p) && file.exists(p)) return(list(name = "7z", path = p))
+    }
+  } else {
+    sz <- Sys.which("7z")
+    if (nzchar(sz)) return(list(name = "7z", path = sz))
+  }
+
+  # 2. tar (bsdtar sur Windows 10+, gère le zip)
+  tar_path <- Sys.which("tar")
+  if (nzchar(tar_path)) return(list(name = "tar", path = tar_path))
+
+  # 3. PowerShell (Windows, lent mais fiable)
+  if (.Platform$OS.type == "windows") {
+    ps <- Sys.which("powershell")
+    if (nzchar(ps)) return(list(name = "powershell", path = ps))
+  }
+
+  # 4. Aucun outil externe
+  list(name = "r_unzip", path = NULL)
 }
 
 #' Télécharger le dataset TreeSatAI-Time-Series depuis HuggingFace
