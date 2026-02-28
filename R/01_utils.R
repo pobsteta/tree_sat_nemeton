@@ -228,8 +228,9 @@ list_s2_files <- function(input_dir, band = NULL) {
 #' Supporte l'interpolation glue : log_msg("{nrow(SPECIES)} espèces")
 log_msg <- function(..., level = "info") {
   timestamp <- format(Sys.time(), "%Y-%m-%d %H:%M:%S")
+  caller_env <- parent.frame()
   msg <- tryCatch(
-    glue::glue(..., .envir = parent.frame()),
+    glue::glue(..., .envir = caller_env),
     error = function(e) paste0(...)
   )
   switch(level,
