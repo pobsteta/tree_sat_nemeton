@@ -209,7 +209,20 @@ CLASSIF_PARAMS <- list(
   use_spectral_indices = TRUE,  # Indices spectraux calculés
   use_phenometrics     = TRUE,  # Métriques phénologiques extraites
   use_temporal_stats   = TRUE,  # Statistiques temporelles (mean, sd, etc.)
-  use_terrain          = TRUE   # Features topographiques (MNT, pente, exposition, TWI)
+  use_terrain          = TRUE,  # Features topographiques (MNT, pente, exposition, TWI)
+
+  # --- Classification soft (probabilités) ---
+  # Exporter les probabilités complètes par essence (raster multi-bandes)
+  export_probabilities = TRUE,
+
+  # Seuil de présence : une essence est "présente" si sa proba dépasse ce seuil
+  presence_threshold = 0.10,
+
+  # Exporter la carte d'entropie de Shannon (taux de mélange)
+  export_shannon = TRUE,
+
+  # Exporter les cartes de présence binaires par essence (proba > seuil)
+  export_presence = TRUE
 )
 
 # --- Paramètres MNT / terrain -------------------------------------------------

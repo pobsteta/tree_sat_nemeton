@@ -463,43 +463,110 @@ classify_pixels <- function(pixel_features, model) {
   )
 }
 
-#' Reconstruction du raster classifié à partir des prédictions pixellaires
+#' Reconstruction des rasters classifiés à partir des prédictions pixellaires
 #'
-#' @param predictions Sortie de classify_pixels
+#' Produit une classification soft complète :
+#' - Raster catégoriel de l'essence dominante (comme avant)
+#' - Raster de confiance (probabilité max)
+#' - Raster multi-bandes des probabilités par essence (1 bande = 1 essence)
+#' - Raster d'entropie de Shannon (taux de mélange)
+#' - Raster multi-bandes de présence binaire par essence (proba > seuil)
+#'
+#' @param predictions Sortie de classify_pixels (contient all_probas)
 #' @param pixel_features Sortie de extract_pixel_features
-#' @return Liste avec le raster d'espèces et le raster de confiance
+#' @return Liste avec tous les rasters et métadonnées
 build_species_raster <- function(predictions, pixel_features) {
-  log_msg("Construction du raster des essences...")
+  log_msg("Construction des rasters (classification soft)...")
 
   template <- pixel_features$template
   n_pixels <- pixel_features$n_rows * pixel_features$n_cols
+  class_names <- predictions$class_names
+  n_classes <- length(class_names)
+  valid_idx <- predictions$valid_idx
 
-  # Raster des classes (code numérique 1-20)
+  # --- 1. Raster des classes (essence dominante, code 1-N) ---
   class_vals <- rep(NA_real_, n_pixels)
-  class_vals[predictions$valid_idx] <- predictions$class_idx
+  class_vals[valid_idx] <- predictions$class_idx
 
   r_class <- terra::rast(template)
   terra::values(r_class) <- class_vals
   names(r_class) <- "species_code"
 
-  # Raster de confiance (probabilité max)
-  proba_vals <- rep(NA_real_, n_pixels)
-  proba_vals[predictions$valid_idx] <- predictions$max_proba
-
-  r_proba <- terra::rast(template)
-  terra::values(r_proba) <- proba_vals
-  names(r_proba) <- "confidence"
-
-  # Table d'attribution (code → nom d'espèce)
   levels_df <- data.frame(
-    value  = seq_along(predictions$class_names),
-    species = predictions$class_names
+    value   = seq_along(class_names),
+    species = class_names
   )
   levels(r_class) <- levels_df
 
-  log_msg("  Raster classifié construit", level = "success")
+  # --- 2. Raster de confiance (probabilité max) ---
+  proba_vals <- rep(NA_real_, n_pixels)
+  proba_vals[valid_idx] <- predictions$max_proba
 
-  list(species = r_class, confidence = r_proba, legend = levels_df)
+  r_confidence <- terra::rast(template)
+  terra::values(r_confidence) <- proba_vals
+  names(r_confidence) <- "confidence"
+
+  # --- 3. Raster multi-bandes : probabilités par essence ---
+  r_probas <- NULL
+  if (isTRUE(CLASSIF_PARAMS$export_probabilities)) {
+    log_msg("  Construction raster multi-bandes probabilités ({n_classes} bandes)...")
+    proba_layers <- list()
+    for (k in seq_len(n_classes)) {
+      vals <- rep(NA_real_, n_pixels)
+      vals[valid_idx] <- predictions$all_probas[, k]
+      r_k <- terra::rast(template)
+      terra::values(r_k) <- vals
+      proba_layers[[k]] <- r_k
+    }
+    r_probas <- terra::rast(proba_layers)
+    names(r_probas) <- paste0("prob_", gsub(" ", "_", class_names))
+  }
+
+  # --- 4. Raster entropie de Shannon (taux de mélange) ---
+  r_shannon <- NULL
+  if (isTRUE(CLASSIF_PARAMS$export_shannon)) {
+    log_msg("  Calcul de l'entropie de Shannon par pixel...")
+    # H = -sum(p * log(p)), normalisée par log(n_classes) → [0, 1]
+    shannon_vals_valid <- apply(predictions$all_probas, 1, function(p) {
+      p <- p[p > 0]  # éviter log(0)
+      -sum(p * log(p)) / log(n_classes)
+    })
+
+    shannon_vals <- rep(NA_real_, n_pixels)
+    shannon_vals[valid_idx] <- shannon_vals_valid
+
+    r_shannon <- terra::rast(template)
+    terra::values(r_shannon) <- shannon_vals
+    names(r_shannon) <- "shannon_entropy"
+  }
+
+  # --- 5. Raster multi-bandes : présence binaire (proba > seuil) ---
+  r_presence <- NULL
+  if (isTRUE(CLASSIF_PARAMS$export_presence)) {
+    threshold <- CLASSIF_PARAMS$presence_threshold %||% 0.10
+    log_msg("  Cartes de présence par essence (seuil = {threshold})...")
+    presence_layers <- list()
+    for (k in seq_len(n_classes)) {
+      vals <- rep(NA_integer_, n_pixels)
+      vals[valid_idx] <- as.integer(predictions$all_probas[, k] >= threshold)
+      r_k <- terra::rast(template)
+      terra::values(r_k) <- vals
+      presence_layers[[k]] <- r_k
+    }
+    r_presence <- terra::rast(presence_layers)
+    names(r_presence) <- paste0("presence_", gsub(" ", "_", class_names))
+  }
+
+  log_msg("  Rasters construits (soft classification)", level = "success")
+
+  list(
+    species    = r_class,
+    confidence = r_confidence,
+    probas     = r_probas,
+    shannon    = r_shannon,
+    presence   = r_presence,
+    legend     = levels_df
+  )
 }
 
 # ==============================================================================
@@ -845,25 +912,56 @@ predict_species_map <- function(aoi_path,
   # --- 7. Sauvegarde des résultats ---
   cli::cli_h2("7. Sauvegarde")
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+  output_files <- list()
 
-  # Raster GeoTIFF
+  # 7a. Raster essence dominante (catégoriel, comme avant)
   tif_path <- file.path(output_dir, "carte_essences.tif")
   if (file.exists(tif_path)) file.remove(tif_path)
   terra::writeRaster(rasters$species, tif_path, datatype = "INT1U")
-  log_msg("  Raster espèces  : {tif_path}", level = "success")
+  log_msg("  Raster espèces       : {tif_path}", level = "success")
+  output_files$species <- tif_path
 
-  # Raster confiance
-  proba_path <- file.path(output_dir, "carte_confiance.tif")
-  if (file.exists(proba_path)) file.remove(proba_path)
-  terra::writeRaster(rasters$confidence, proba_path)
-  log_msg("  Raster confiance : {proba_path}", level = "success")
+  # 7b. Raster confiance (probabilité max)
+  conf_path <- file.path(output_dir, "carte_confiance.tif")
+  if (file.exists(conf_path)) file.remove(conf_path)
+  terra::writeRaster(rasters$confidence, conf_path)
+  log_msg("  Raster confiance     : {conf_path}", level = "success")
+  output_files$confidence <- conf_path
 
-  # Vectoriser le raster (polygones par espèce)
+  # 7c. Raster multi-bandes probabilités (1 bande par essence)
+  if (!is.null(rasters$probas)) {
+    probas_path <- file.path(output_dir, "carte_probabilites.tif")
+    if (file.exists(probas_path)) file.remove(probas_path)
+    terra::writeRaster(rasters$probas, probas_path)
+    log_msg("  Raster probabilités  : {probas_path} ({terra::nlyr(rasters$probas)} bandes)",
+            level = "success")
+    output_files$probas <- probas_path
+  }
+
+  # 7d. Raster entropie de Shannon (taux de mélange, 0 = pur, 1 = mélange max)
+  if (!is.null(rasters$shannon)) {
+    shannon_path <- file.path(output_dir, "carte_shannon.tif")
+    if (file.exists(shannon_path)) file.remove(shannon_path)
+    terra::writeRaster(rasters$shannon, shannon_path)
+    log_msg("  Raster Shannon       : {shannon_path}", level = "success")
+    output_files$shannon <- shannon_path
+  }
+
+  # 7e. Raster multi-bandes présence binaire (proba >= seuil)
+  if (!is.null(rasters$presence)) {
+    presence_path <- file.path(output_dir, "carte_presence.tif")
+    if (file.exists(presence_path)) file.remove(presence_path)
+    terra::writeRaster(rasters$presence, presence_path, datatype = "INT1U")
+    log_msg("  Raster présence      : {presence_path} ({terra::nlyr(rasters$presence)} bandes)",
+            level = "success")
+    output_files$presence <- presence_path
+  }
+
+  # 7f. Vectoriser le raster essence dominante (polygones)
   log_msg("  Vectorisation...")
   species_poly <- terra::as.polygons(rasters$species, dissolve = TRUE)
   species_sf   <- sf::st_as_sf(species_poly)
 
-  # Ajouter les noms d'espèces
   if ("species_code" %in% names(species_sf)) {
     species_sf <- species_sf |>
       dplyr::left_join(
@@ -875,17 +973,18 @@ predict_species_map <- function(aoi_path,
 
   gpkg_path <- file.path(output_dir, "carte_essences.gpkg")
   sf::st_write(species_sf, gpkg_path, delete_dsn = TRUE, quiet = TRUE)
-  log_msg("  Vecteur espèces  : {gpkg_path}", level = "success")
+  log_msg("  Vecteur espèces      : {gpkg_path}", level = "success")
+  output_files$vector <- gpkg_path
 
-  # Légende CSV
+  # 7g. Légende CSV
   legend_path <- file.path(output_dir, "legende_especes.csv")
   readr::write_csv(rasters$legend, legend_path)
 
-  # Statistiques
+  # 7h. Statistiques
   stats <- compute_map_statistics(predictions, rasters)
   stats_path <- file.path(output_dir, "statistiques_essences.csv")
   readr::write_csv(stats, stats_path)
-  log_msg("  Statistiques     : {stats_path}", level = "success")
+  log_msg("  Statistiques         : {stats_path}", level = "success")
 
   # --- 8. Résumé ---
   t_elapsed <- difftime(Sys.time(), t_start, units = "mins")
@@ -899,15 +998,34 @@ predict_species_map <- function(aoi_path,
   cli::cli_text("")
   cli::cli_text("Fichiers de sortie :")
   cli::cli_ul()
-  cli::cli_li("{tif_path}   — raster classifié (GeoTIFF)")
-  cli::cli_li("{proba_path} — confiance de prédiction")
-  cli::cli_li("{gpkg_path}  — polygones par espèce (GeoPackage)")
-  cli::cli_li("{stats_path} — statistiques par espèce")
+  cli::cli_li("{output_files$species}    — essence dominante (GeoTIFF catégoriel)")
+  cli::cli_li("{output_files$confidence} — confiance (probabilité max)")
+  if (!is.null(output_files$probas))
+    cli::cli_li("{output_files$probas}   — probabilités par essence (multi-bandes)")
+  if (!is.null(output_files$shannon))
+    cli::cli_li("{output_files$shannon}  — entropie de Shannon (taux de mélange)")
+  if (!is.null(output_files$presence))
+    cli::cli_li("{output_files$presence} — présence par essence (binaire, multi-bandes)")
+  cli::cli_li("{output_files$vector}     — polygones par espèce (GeoPackage)")
+  cli::cli_li("{stats_path}              — statistiques par espèce")
   cli::cli_end()
+
+  if (!is.null(output_files$shannon)) {
+    cli::cli_text("")
+    cli::cli_alert_info(paste0(
+      "Entropie de Shannon normalisée [0-1] : ",
+      "0 = peuplement pur (100% une essence), ",
+      "1 = mélange maximal (équiprobable). ",
+      "Utilisable directement pour l'indice de biodiversité Néméton (famille B)."
+    ))
+  }
 
   invisible(list(
     species_raster    = rasters$species,
     confidence_raster = rasters$confidence,
+    probas_raster     = rasters$probas,
+    shannon_raster    = rasters$shannon,
+    presence_raster   = rasters$presence,
     species_vector    = species_sf,
     statistics        = stats,
     model             = model,
@@ -1031,6 +1149,14 @@ compute_map_statistics <- function(predictions, rasters) {
   proba_by_class <- tapply(predictions$max_proba, class_idx, mean, na.rm = TRUE)
   stats$confiance_moy <- round(as.numeric(proba_by_class[as.character(stats$code)]) * 100, 1)
   stats$confiance_moy[is.na(stats$confiance_moy)] <- 0
+
+  # Entropie de Shannon moyenne par pixel dominant de chaque espèce
+  if (!is.null(rasters$shannon)) {
+    shannon_valid <- terra::values(rasters$shannon)[predictions$valid_idx]
+    shannon_by_class <- tapply(shannon_valid, class_idx, mean, na.rm = TRUE)
+    stats$shannon_moy <- round(as.numeric(shannon_by_class[as.character(stats$code)]), 3)
+    stats$shannon_moy[is.na(stats$shannon_moy)] <- 0
+  }
 
   # Trier par surface décroissante
   stats <- stats[order(-stats$n_pixels), ]
