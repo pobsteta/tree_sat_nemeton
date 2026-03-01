@@ -19,6 +19,7 @@ export(search_sentinel2)
 export(search_sentinel1)
 
 # --- Classification ---
+export(compute_class_weights)
 export(split_train_test)
 export(select_features)
 export(train_random_forest)

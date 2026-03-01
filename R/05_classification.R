@@ -111,6 +111,36 @@ select_features <- function(feature_matrix) {
 # 2. RANDOM FOREST
 # ==============================================================================
 
+#' Calcul des poids de classe pour compenser le déséquilibre
+#'
+#' Retourne un vecteur de poids par échantillon (case weights) inversement
+#' proportionnels à la fréquence de chaque classe : w_i = N / (K × n_i)
+#' où N = effectif total, K = nombre de classes, n_i = effectif de la classe i.
+#'
+#' @param y Vecteur factor ou character des labels de classe
+#' @return Vecteur numérique de même longueur que y (un poids par échantillon)
+#' @export
+compute_class_weights <- function(y) {
+  y <- as.factor(y)
+  class_counts <- table(y)
+  n_total   <- length(y)
+  n_classes <- length(class_counts)
+
+  # Poids par classe : inversement proportionnel à la fréquence
+  weight_per_class <- n_total / (n_classes * class_counts)
+
+  # Attribuer à chaque échantillon le poids de sa classe
+  sample_weights <- as.numeric(weight_per_class[as.character(y)])
+
+  log_msg("Poids de classe (déséquilibre) :")
+  for (cls in names(sort(class_counts))) {
+    log_msg("  {cls} : n={class_counts[cls]}, poids={round(weight_per_class[cls], 3)}",
+            level = "info")
+  }
+
+  sample_weights
+}
+
 #' Entraînement d'un Random Forest pour la classification d'espèces
 #' @param train_data data.frame d'entraînement
 #' @param feature_cols Colonnes features à utiliser
@@ -149,6 +179,9 @@ train_random_forest <- function(train_data, feature_cols, target_col = "species_
 
   log_msg("  ntree={CLASSIF_PARAMS$rf_ntree}, mtry={mtry}", level = "info")
 
+  # Poids de classe pour compenser le déséquilibre
+  case_wts <- compute_class_weights(y_train)
+
   # Entraînement avec ranger (plus rapide que randomForest)
   model <- ranger::ranger(
     x              = X_train,
@@ -157,6 +190,7 @@ train_random_forest <- function(train_data, feature_cols, target_col = "species_
     mtry           = mtry,
     importance      = "impurity",
     probability     = TRUE,
+    case.weights    = case_wts,
     seed            = CLASSIF_PARAMS$seed,
     verbose         = TRUE,
     num.threads     = parallel::detectCores() - 1
@@ -521,7 +555,19 @@ train_temporal_cnn <- function(train_tensors, val_tensors = NULL,
   )
 
   optimizer <- torch::optim_adam(model$parameters, lr = lr)
-  loss_fn   <- torch::nn_cross_entropy_loss()
+
+  # Poids de classe pour compenser le déséquilibre dans la loss
+  class_counts <- table(factor(
+    as.integer(train_tensors$y$to(device = "cpu")) + 1L,
+    levels = seq_len(train_tensors$n_classes)
+  ))
+  n_total <- sum(class_counts)
+  n_cls   <- train_tensors$n_classes
+  w_vec   <- n_total / (n_cls * pmax(class_counts, 1))
+  class_weight_tensor <- torch::torch_tensor(as.numeric(w_vec), dtype = torch::torch_float())
+  log_msg("  Poids de classe CNN : {paste(round(w_vec, 2), collapse=', ')}", level = "info")
+
+  loss_fn <- torch::nn_cross_entropy_loss(weight = class_weight_tensor)
 
   # Dataset et DataLoader
   train_ds <- torch::tensor_dataset(train_tensors$X, train_tensors$y)
@@ -629,7 +675,8 @@ save_model <- function(model, eval_results = NULL, model_name = "treesatai_rf",
     oob_error     = if (!is.null(model$prediction.error)) model$prediction.error else NA,
     overall_accuracy = if (!is.null(eval_results)) eval_results$overall_accuracy else NA,
     kappa         = if (!is.null(eval_results)) eval_results$kappa else NA,
-    species       = SPECIES$latin
+    class_names   = if (!is.null(model$class_names)) model$class_names else SPECIES$latin,
+    class_weighting = TRUE
   )
 
   meta_path <- file.path(output_dir, paste0(model_name, "_metadata.json"))
