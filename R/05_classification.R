@@ -92,6 +92,12 @@ select_features <- function(feature_matrix) {
   fourier_cols <- grep("fourier_", all_cols, value = TRUE)
   feature_cols <- c(feature_cols, fourier_cols)
 
+  # Features topographiques (MNT, pente, exposition, TWI)
+  if (isTRUE(CLASSIF_PARAMS$use_terrain)) {
+    terrain_cols <- grep("^DEM_", all_cols, value = TRUE)
+    feature_cols <- c(feature_cols, terrain_cols)
+  }
+
   # Déduplication
   feature_cols <- unique(feature_cols)
 

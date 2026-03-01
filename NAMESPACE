@@ -58,6 +58,12 @@ export(load_treesatai_split)
 export(load_treesatai_data)
 export(init_project_dirs)
 
+# --- Terrain / DEM ---
+export(download_dem_ign)
+export(download_dem_copernicus)
+export(compute_terrain_rasters)
+export(extract_terrain_at_points)
+
 # --- Python bridge ---
 export(setup_python_env)
 export(check_python_ready)

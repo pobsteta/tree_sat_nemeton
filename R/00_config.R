@@ -205,10 +205,34 @@ CLASSIF_PARAMS <- list(
   cv_repeats   = 3,
 
   # Features à utiliser
-  use_spectral_bands  = TRUE,  # Bandes brutes interpolées
- use_spectral_indices = TRUE,  # Indices spectraux calculés
+  use_spectral_bands   = TRUE,  # Bandes brutes interpolées
+  use_spectral_indices = TRUE,  # Indices spectraux calculés
   use_phenometrics     = TRUE,  # Métriques phénologiques extraites
-  use_temporal_stats   = TRUE   # Statistiques temporelles (mean, sd, etc.)
+  use_temporal_stats   = TRUE,  # Statistiques temporelles (mean, sd, etc.)
+  use_terrain          = TRUE   # Features topographiques (MNT, pente, exposition, TWI)
+)
+
+# --- Paramètres MNT / terrain -------------------------------------------------
+DEM_PARAMS <- list(
+  # Source DEM pour la prédiction spatiale
+  # "ign" = RGE ALTI 1 m (Géoplateforme IGN, France uniquement)
+  # "copernicus" = Copernicus DEM 30 m (Europe, via Planetary Computer)
+  dem_source = "ign",
+
+  # URL WCS de la Géoplateforme IGN (MNT 1 m RGE ALTI)
+  ign_wcs_url = "https://data.geopf.fr/wcs/ows",
+  ign_coverage_id = "ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES",
+
+  # Features terrain à calculer
+  compute_slope  = TRUE,
+  compute_aspect = TRUE,
+  compute_twi    = TRUE,
+
+  # Résolution de rééchantillonnage pour l'entraînement (mètres)
+  resample_res = 10,
+
+  # Plafond TWI (valeurs extrêmes dans les zones plates)
+  twi_max = 20
 )
 
 # --- Paramètres de visualisation ---------------------------------------------

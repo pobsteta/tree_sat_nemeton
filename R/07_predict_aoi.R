@@ -165,8 +165,11 @@ build_s2_cube <- function(s2_dir, aoi, bands = S2_BAND_NAMES,
 #' @param cube_list Liste de SpatRaster (1 par date, chaque couche = 1 bande)
 #' @param dates Vecteur de dates correspondant au cube
 #' @param block_size Nombre de lignes par bloc de traitement
-#' @return SpatRaster multi-couches avec les features par pixel
-extract_pixel_features <- function(cube_list, dates, block_size = 100) {
+#' @param terrain_rasters Liste optionnelle de chemins raster terrain
+#'   (sortie de compute_terrain_rasters : dem, slope, aspect, twi)
+#' @return Liste avec la matrice de features, indices valides, etc.
+extract_pixel_features <- function(cube_list, dates, block_size = 100,
+                                    terrain_rasters = NULL) {
   log_msg("Extraction des features pixel par pixel...")
 
   n_dates  <- length(cube_list)
@@ -236,6 +239,44 @@ extract_pixel_features <- function(cube_list, dates, block_size = 100) {
       val_range <- range(test_vals, na.rm = TRUE)
       log_msg("  Plage de valeurs : [{val_range[1]}, {val_range[2]}]")
     }
+  }
+
+  # --- Charger les rasters terrain si fournis ---
+  terrain_vals <- NULL
+  if (!is.null(terrain_rasters)) {
+    log_msg("  Chargement des rasters terrain...")
+    tryCatch({
+      r_dem    <- terra::rast(terrain_rasters$dem)
+      r_slope  <- terra::rast(terrain_rasters$slope)
+      r_aspect <- terra::rast(terrain_rasters$aspect)
+      r_twi    <- terra::rast(terrain_rasters$twi)
+
+      # Rééchantillonner les rasters terrain sur la grille du cube S2
+      r_dem    <- terra::resample(r_dem, template, method = "bilinear")
+      r_slope  <- terra::resample(r_slope, template, method = "bilinear")
+      r_aspect <- terra::resample(r_aspect, template, method = "bilinear")
+      r_twi    <- terra::resample(r_twi, template, method = "bilinear")
+
+      # Extraire toutes les valeurs en une passe (n_pixels × 1)
+      dem_v    <- as.numeric(terra::values(r_dem))
+      slope_v  <- as.numeric(terra::values(r_slope))
+      aspect_v <- as.numeric(terra::values(r_aspect))
+      twi_v    <- as.numeric(terra::values(r_twi))
+
+      # Convertir exposition en sin/cos
+      aspect_rad <- aspect_v * pi / 180
+      terrain_vals <- data.frame(
+        DEM_elevation  = dem_v,
+        DEM_slope      = slope_v,
+        DEM_aspect_sin = sin(aspect_rad),
+        DEM_aspect_cos = cos(aspect_rad),
+        DEM_TWI        = twi_v
+      )
+      log_msg("  Terrain chargé : {nrow(terrain_vals)} pixels × 5 features", level = "success")
+    }, error = function(e) {
+      log_msg("  Erreur chargement terrain : {e$message}", level = "warning")
+      terrain_vals <<- NULL
+    })
   }
 
   # Identifier les pixels valides (au moins 3 dates non-NA pour la première bande)
@@ -320,6 +361,20 @@ extract_pixel_features <- function(cube_list, dates, block_size = 100) {
       fourier <- fourier_features(ndvi_smooth, n_harmonics = 3)
       names(fourier) <- paste0("NDVI_", names(fourier))
       features <- c(features, fourier)
+    }
+
+    # 5. Features terrain (MNT, pente, exposition sin/cos, TWI)
+    if (!is.null(terrain_vals)) {
+      px_terrain <- c(
+        DEM_elevation  = terrain_vals$DEM_elevation[px_idx],
+        DEM_slope      = terrain_vals$DEM_slope[px_idx],
+        DEM_aspect_sin = terrain_vals$DEM_aspect_sin[px_idx],
+        DEM_aspect_cos = terrain_vals$DEM_aspect_cos[px_idx],
+        DEM_TWI        = terrain_vals$DEM_TWI[px_idx]
+      )
+      # Remplacer les NA terrain par 0
+      px_terrain[is.na(px_terrain)] <- 0
+      features <- c(features, px_terrain)
     }
 
     feature_list[[i]] <- features
@@ -670,9 +725,54 @@ predict_species_map <- function(aoi_path,
     stop("Fournissez s2_dir ou utilisez auto_download = TRUE")
   }
 
+  # --- 3b. Données terrain (MNT, pente, exposition, TWI) ---
+  terrain_rasters <- NULL
+  if (isTRUE(CLASSIF_PARAMS$use_terrain)) {
+    cli::cli_h2("3b. Données terrain (MNT + dérivés)")
+
+    dem_dir <- file.path(RAW_DIR, "dem")
+    dir.create(dem_dir, showWarnings = FALSE, recursive = TRUE)
+
+    # Télécharger le MNT (IGN 1m ou Copernicus 30m en fallback)
+    dem_path <- tryCatch({
+      if (DEM_PARAMS$dem_source == "ign") {
+        download_dem_ign(aoi, output_dir = dem_dir,
+                         resolution = DEM_PARAMS$resample_res)
+      } else {
+        download_dem_copernicus(aoi, output_dir = dem_dir)
+      }
+    }, error = function(e) {
+      log_msg("Erreur téléchargement MNT : {e$message}", level = "warning")
+      log_msg("Tentative fallback Copernicus DEM 30 m...", level = "warning")
+      tryCatch(
+        download_dem_copernicus(aoi, output_dir = dem_dir),
+        error = function(e2) {
+          log_msg("Impossible d'obtenir un MNT : {e2$message}", level = "danger")
+          NULL
+        }
+      )
+    })
+
+    if (!is.null(dem_path) && file.exists(dem_path)) {
+      terrain_rasters <- tryCatch(
+        compute_terrain_rasters(dem_path, output_dir = dem_dir),
+        error = function(e) {
+          log_msg("Erreur calcul dérivés terrain : {e$message}", level = "warning")
+          NULL
+        }
+      )
+      if (!is.null(terrain_rasters)) {
+        log_msg("Terrain prêt : MNT + pente + exposition + TWI", level = "success")
+      }
+    } else {
+      log_msg("Pas de MNT disponible — classification sans features terrain", level = "warning")
+    }
+  }
+
   # --- 4. Extraction des features ---
   cli::cli_h2("4. Extraction des features pixellaires")
-  pixel_features <- extract_pixel_features(cube_list, dates)
+  pixel_features <- extract_pixel_features(cube_list, dates,
+                                            terrain_rasters = terrain_rasters)
 
   if (is.null(pixel_features)) {
     cli::cli_alert_danger("Échec de l'extraction des features")

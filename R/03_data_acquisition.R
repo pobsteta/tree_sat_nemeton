@@ -580,6 +580,50 @@ simulate_species_s1 <- function(species_code, dates, ndvi, noise_sd = 0.8) {
   data.frame(S1_VV = vv, S1_VH = vh)
 }
 
+#' Simuler des features topographiques réalistes par espèce
+#'
+#' Chaque espèce a un profil écologique typique (altitude, pente, exposition, humidité).
+#' Les valeurs sont tirées aléatoirement autour de ces moyennes.
+#'
+#' @param sp_code Code espèce (1-20)
+#' @param sample_id ID échantillon (pour reproductibilité)
+#' @return Vecteur nommé : elevation, slope, aspect_sin, aspect_cos, twi
+simulate_terrain_for_species <- function(sp_code, sample_id) {
+  # Profils écologiques moyens par espèce (altitude en m, pente en degrés, TWI)
+  # Basé sur les niches écologiques des espèces en France
+  eco_profiles <- data.frame(
+    # code  elev_mean elev_sd slope_mean slope_sd twi_mean twi_sd  aspect_pref
+    code = 1:20,
+    elev  = c(150, 300, 350, 200, 600, 400, 250, 350, 200, 500,
+              100, 150, 800, 700, 500, 600, 50,  500, 100, 1200),
+    elev_sd = c(100, 150, 150, 100, 200, 150, 100, 150, 100, 200,
+                50,  80,  300, 250, 200, 250, 30,  200, 50,  300),
+    slope = c(8, 12, 15, 10, 15, 12, 8,  10, 5,  18,
+              3, 5,  20, 22, 15, 18, 3,  15, 5,  25),
+    slope_sd = c(5, 5, 8, 5, 8, 6, 5, 5, 3, 8, 2, 3, 8, 8, 6, 8, 2, 8, 3, 10),
+    twi   = c(10, 8, 7, 8, 7, 8, 10, 9, 12, 6,
+              14, 9, 5, 5, 7, 6, 13, 6, 12, 4),
+    twi_sd = c(2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2),
+    stringsAsFactors = FALSE
+  )
+
+  prof <- eco_profiles[sp_code, ]
+
+  set.seed(sp_code * 10000 + sample_id + 999)
+  elev      <- max(0, rnorm(1, prof$elev, prof$elev_sd))
+  slope_deg <- max(0, rnorm(1, prof$slope, prof$slope_sd))
+  twi       <- max(0, min(DEM_PARAMS$twi_max, rnorm(1, prof$twi, prof$twi_sd)))
+  aspect    <- runif(1, 0, 360)  # Exposition aléatoire (degrés)
+
+  c(
+    elevation  = elev,
+    slope      = slope_deg,
+    aspect_sin = sin(aspect * pi / 180),
+    aspect_cos = cos(aspect * pi / 180),
+    twi        = twi
+  )
+}
+
 #' Génération d'un dataset synthétique complet pour les 20 espèces
 #' @param n_samples_per_species Nombre d'échantillons par espèce
 #' @param year Année de simulation
@@ -646,6 +690,9 @@ generate_synthetic_dataset <- function(n_samples_per_species = 50, year = 2021) 
       # Simuler les données radar Sentinel-1 (VV/VH en dB)
       s1_data <- simulate_species_s1(sp_code, target_dates, ndvi)
 
+      # Simuler les features topographiques (réalistes par espèce)
+      terrain <- simulate_terrain_for_species(sp_code, sample_id)
+
       plot_df <- data.frame(
         plot_id      = plot_id,
         species_code = sp_code,
@@ -659,6 +706,12 @@ generate_synthetic_dataset <- function(n_samples_per_species = 50, year = 2021) 
         CRI    = idx_cri,
         RENDVI = idx_rendvi,
         s1_data,
+        # Terrain (constant par parcelle, répété pour le format long)
+        DEM_elevation  = terrain["elevation"],
+        DEM_slope      = terrain["slope"],
+        DEM_aspect_sin = terrain["aspect_sin"],
+        DEM_aspect_cos = terrain["aspect_cos"],
+        DEM_TWI        = terrain["twi"],
         stringsAsFactors = FALSE
       )
 
@@ -768,9 +821,22 @@ build_feature_matrix <- function(ts_long) {
       s1_features <- c(s1_features, calc_s1_temporal_features(vv_ts, vh_ts))
     }
 
+    # Features topographiques (MNT, pente, exposition, TWI)
+    terrain_features <- c()
+    terrain_cols <- c("DEM_elevation", "DEM_slope", "DEM_aspect_sin", "DEM_aspect_cos", "DEM_TWI")
+    if (all(terrain_cols %in% names(plot_data))) {
+      terrain_features <- c(
+        DEM_elevation  = plot_data$DEM_elevation[1],
+        DEM_slope      = plot_data$DEM_slope[1],
+        DEM_aspect_sin = plot_data$DEM_aspect_sin[1],
+        DEM_aspect_cos = plot_data$DEM_aspect_cos[1],
+        DEM_TWI        = plot_data$DEM_TWI[1]
+      )
+    }
+
     rows[[k]] <- c(plot_id = pid, species_code = species_code,
                    species_name = species_name,
-                   band_features, idx_features, s1_features)
+                   band_features, idx_features, s1_features, terrain_features)
   }
 
   cli::cli_progress_done()

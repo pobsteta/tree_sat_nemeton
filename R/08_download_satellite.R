@@ -695,7 +695,310 @@ calc_s1_temporal_features <- function(vv_ts, vh_ts) {
 }
 
 # ==============================================================================
-# 7. NULL-SAFE OPERATOR
+# 7. MNT / TERRAIN — Téléchargement et dérivés topographiques
+# ==============================================================================
+
+#' Télécharger le MNT IGN RGE ALTI 1 m via la Géoplateforme WCS
+#'
+#' @param aoi sf object de la zone d'intérêt
+#' @param output_dir Répertoire de sortie
+#' @param resolution Résolution cible en mètres (défaut : 1 m)
+#' @return Chemin vers le raster DEM téléchargé
+#' @export
+download_dem_ign <- function(aoi, output_dir = NULL, resolution = 1) {
+  if (is.null(output_dir)) output_dir <- file.path(.get_project_root(), "data", "raw", "dem")
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+  dem_path <- file.path(output_dir, "mnt_ign_1m.tif")
+  if (file.exists(dem_path)) {
+    log_msg("MNT IGN d\u00e9j\u00e0 t\u00e9l\u00e9charg\u00e9 : {dem_path}", level = "success")
+    return(dem_path)
+  }
+
+  log_msg("T\u00e9l\u00e9chargement MNT IGN RGE ALTI 1 m...")
+
+  # Reprojeter en Lambert-93 (EPSG:2154) si nécessaire
+  aoi_l93 <- sf::st_transform(aoi, 2154)
+  bbox <- sf::st_bbox(aoi_l93)
+
+  # Ajouter un buffer de 100 m
+  bbox_buf <- c(
+    xmin = bbox["xmin"] - 100,
+    ymin = bbox["ymin"] - 100,
+    xmax = bbox["xmax"] + 100,
+    ymax = bbox["ymax"] + 100
+  )
+
+  # Dimensions en pixels
+  width  <- ceiling((bbox_buf["xmax"] - bbox_buf["xmin"]) / resolution)
+  height <- ceiling((bbox_buf["ymax"] - bbox_buf["ymin"]) / resolution)
+
+  # Limiter à 10000×10000 pixels par requête
+  max_px <- 10000
+  if (width > max_px || height > max_px) {
+    log_msg("Zone trop grande ({width}\u00d7{height} px), d\u00e9coupage en tuiles...", level = "warning")
+    width  <- min(width, max_px)
+    height <- min(height, max_px)
+  }
+
+  # URL WCS IGN Géoplateforme
+  wcs_url <- paste0(
+    DEM_PARAMS$ign_wcs_url,
+    "?SERVICE=WCS",
+    "&VERSION=2.0.1",
+    "&REQUEST=GetCoverage",
+    "&COVERAGEID=", DEM_PARAMS$ign_coverage_id,
+    "&FORMAT=image/tiff",
+    "&SUBSET=x(", bbox_buf["xmin"], ",", bbox_buf["xmax"], ")",
+    "&SUBSET=y(", bbox_buf["ymin"], ",", bbox_buf["ymax"], ")",
+    "&SUBSETTINGCRS=http://www.opengis.net/def/crs/EPSG/0/2154",
+    "&OUTPUTCRS=http://www.opengis.net/def/crs/EPSG/0/2154",
+    "&WIDTH=", width,
+    "&HEIGHT=", height
+  )
+
+  # Téléchargement
+  tmp_file <- tempfile(fileext = ".tif")
+  resp <- tryCatch(
+    httr2::request(wcs_url) |>
+      httr2::req_timeout(120) |>
+      httr2::req_perform(path = tmp_file),
+    error = function(e) {
+      log_msg("Erreur WCS IGN : {e$message}", level = "danger")
+      return(NULL)
+    }
+  )
+
+  if (is.null(resp)) {
+    log_msg("Tentative fallback Copernicus DEM 30 m...", level = "warning")
+    return(download_dem_copernicus(aoi, output_dir))
+  }
+
+  # Vérifier que c'est un GeoTIFF valide
+  dem <- tryCatch(terra::rast(tmp_file), error = function(e) NULL)
+  if (is.null(dem)) {
+    log_msg("R\u00e9ponse WCS invalide, fallback Copernicus DEM", level = "warning")
+    return(download_dem_copernicus(aoi, output_dir))
+  }
+
+  terra::writeRaster(dem, dem_path, overwrite = TRUE)
+  unlink(tmp_file)
+
+  log_msg("MNT IGN 1 m t\u00e9l\u00e9charg\u00e9 : {dem_path} ({width}\u00d7{height} px)", level = "success")
+  dem_path
+}
+
+#' Fallback : Copernicus DEM 30 m via Planetary Computer STAC
+#'
+#' @param aoi sf object
+#' @param output_dir Répertoire de sortie
+#' @return Chemin vers le raster DEM
+#' @export
+download_dem_copernicus <- function(aoi, output_dir = NULL) {
+  if (is.null(output_dir)) output_dir <- file.path(.get_project_root(), "data", "raw", "dem")
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+  dem_path <- file.path(output_dir, "dem_copernicus_30m.tif")
+  if (file.exists(dem_path)) {
+    log_msg("DEM Copernicus d\u00e9j\u00e0 t\u00e9l\u00e9charg\u00e9 : {dem_path}", level = "success")
+    return(dem_path)
+  }
+
+  log_msg("T\u00e9l\u00e9chargement Copernicus DEM 30 m via Planetary Computer...")
+
+  aoi_4326 <- sf::st_transform(aoi, 4326)
+  bbox <- sf::st_bbox(aoi_4326)
+
+  # STAC query sur Planetary Computer
+  s <- rstac::stac("https://planetarycomputer.microsoft.com/api/stac/v1")
+  items <- s |>
+    rstac::stac_search(
+      collections = "cop-dem-glo-30",
+      bbox = as.numeric(bbox)
+    ) |>
+    rstac::get_request() |>
+    rstac::items_sign(rstac::sign_planetary_computer())
+
+  if (length(items$features) == 0) {
+    log_msg("Aucune tuile DEM trouv\u00e9e", level = "danger")
+    return(NULL)
+  }
+
+  # Télécharger et fusionner les tuiles
+  dem_tiles <- list()
+  for (i in seq_along(items$features)) {
+    tile_url <- items$features[[i]]$assets$data$href
+    tile_file <- tempfile(fileext = ".tif")
+    tryCatch({
+      httr2::request(tile_url) |>
+        httr2::req_timeout(120) |>
+        httr2::req_perform(path = tile_file)
+      dem_tiles[[i]] <- terra::rast(tile_file)
+    }, error = function(e) {
+      log_msg("Erreur tuile {i} : {e$message}", level = "warning")
+    })
+  }
+
+  dem_tiles <- Filter(Negate(is.null), dem_tiles)
+  if (length(dem_tiles) == 0) return(NULL)
+
+  # Fusionner si plusieurs tuiles
+  if (length(dem_tiles) == 1) {
+    dem <- dem_tiles[[1]]
+  } else {
+    dem <- do.call(terra::merge, dem_tiles)
+  }
+
+  # Découper à l'AOI avec buffer
+  aoi_buf <- sf::st_buffer(aoi_4326, 0.01)  # ~1 km buffer
+  dem <- terra::crop(dem, terra::vect(aoi_buf))
+
+  terra::writeRaster(dem, dem_path, overwrite = TRUE)
+  log_msg("DEM Copernicus 30 m t\u00e9l\u00e9charg\u00e9 : {dem_path}", level = "success")
+  dem_path
+}
+
+#' Calculer les dérivés topographiques (pente, exposition, TWI) depuis un MNT
+#'
+#' @param dem_path Chemin vers le raster DEM
+#' @param output_dir Répertoire de sortie (par défaut : même répertoire que le DEM)
+#' @return Liste avec les chemins des rasters dérivés
+#' @export
+compute_terrain_rasters <- function(dem_path, output_dir = NULL) {
+  if (is.null(output_dir)) output_dir <- dirname(dem_path)
+
+  dem <- terra::rast(dem_path)
+  log_msg("Calcul des d\u00e9riv\u00e9s topographiques depuis : {dem_path}")
+
+  results <- list(dem = dem_path)
+
+  # --- Pente (degrés) ---
+  slope_path <- file.path(output_dir, "slope.tif")
+  if (!file.exists(slope_path)) {
+    slope <- terra::terrain(dem, v = "slope", unit = "degrees")
+    terra::writeRaster(slope, slope_path, overwrite = TRUE)
+    log_msg("  Pente calcul\u00e9e : {slope_path}", level = "info")
+  }
+  results$slope <- slope_path
+
+  # --- Exposition (degrés, 0-360, nord = 0) ---
+  aspect_path <- file.path(output_dir, "aspect.tif")
+  if (!file.exists(aspect_path)) {
+    aspect <- terra::terrain(dem, v = "aspect", unit = "degrees")
+    terra::writeRaster(aspect, aspect_path, overwrite = TRUE)
+    log_msg("  Exposition calcul\u00e9e : {aspect_path}", level = "info")
+  }
+  results$aspect <- aspect_path
+
+  # --- TWI (Topographic Wetness Index) ---
+  # TWI = ln(a / tan(β)) avec a = aire drainée spécifique, β = pente
+  twi_path <- file.path(output_dir, "twi.tif")
+  if (!file.exists(twi_path)) {
+    slope_rad <- terra::terrain(dem, v = "slope", unit = "radians")
+    tan_slope <- tan(slope_rad)
+    # Éviter division par zéro (zones plates)
+    tan_slope <- terra::ifel(tan_slope < 0.001, 0.001, tan_slope)
+
+    # Aire drainée approximée via TPI (Topographic Position Index) comme proxy
+    # Approche simplifiée : utiliser flowdir + log(contributing area)
+    # Pour un TWI robuste, on utilise whitebox si disponible
+    if (requireNamespace("whitebox", quietly = TRUE)) {
+      log_msg("  TWI via WhiteboxTools (flow accumulation exacte)", level = "info")
+      # Fichiers temporaires pour whitebox
+      dem_tmp <- tempfile(fileext = ".tif")
+      filled_tmp <- tempfile(fileext = ".tif")
+      fac_tmp <- tempfile(fileext = ".tif")
+
+      terra::writeRaster(dem, dem_tmp, overwrite = TRUE)
+      whitebox::wbt_fill_depressions(dem_tmp, filled_tmp)
+      whitebox::wbt_d_inf_flow_accumulation(filled_tmp, fac_tmp)
+
+      fac <- terra::rast(fac_tmp)
+      # Aire drainée spécifique = fac * résolution
+      res_m <- terra::res(dem)[1]
+      sca <- fac * res_m
+      sca <- terra::ifel(sca < 1, 1, sca)
+
+      twi <- log(sca / tan_slope)
+      # Plafonner
+      twi <- terra::ifel(twi > DEM_PARAMS$twi_max, DEM_PARAMS$twi_max, twi)
+
+      unlink(c(dem_tmp, filled_tmp, fac_tmp))
+    } else {
+      log_msg("  TWI simplifi\u00e9 (whitebox non install\u00e9, TPI comme proxy)", level = "warning")
+      # Approximation : TPI = DEM - DEM_lissé, convertie en proxy d'humidité
+      dem_smooth <- terra::focal(dem, w = matrix(1, 11, 11), fun = "mean", na.rm = TRUE)
+      tpi <- dem - dem_smooth
+
+      # TWI approx : zones basses (TPI négatif) = plus humides
+      # On normalise en 0-twi_max
+      twi <- -tpi  # Inverser : vallées positives
+      twi_min <- terra::global(twi, "min", na.rm = TRUE)$min
+      twi_max_val <- terra::global(twi, "max", na.rm = TRUE)$max
+      if (twi_max_val > twi_min) {
+        twi <- (twi - twi_min) / (twi_max_val - twi_min) * DEM_PARAMS$twi_max
+      }
+    }
+
+    terra::writeRaster(twi, twi_path, overwrite = TRUE)
+    log_msg("  TWI calcul\u00e9 : {twi_path}", level = "info")
+  }
+  results$twi <- twi_path
+
+  log_msg("D\u00e9riv\u00e9s topographiques pr\u00eats", level = "success")
+  results
+}
+
+#' Extraire les valeurs terrain (MNT, pente, exposition, TWI) pour des points
+#'
+#' @param points sf object ou data.frame avec longitude/latitude
+#' @param terrain_rasters Liste des chemins raster (sortie de compute_terrain_rasters)
+#' @param crs_points CRS des coordonnées d'entrée (défaut : EPSG:2154)
+#' @return data.frame avec colonnes DEM_elevation, DEM_slope, DEM_aspect,
+#'   DEM_aspect_sin, DEM_aspect_cos, DEM_TWI
+#' @export
+extract_terrain_at_points <- function(points, terrain_rasters, crs_points = 2154) {
+  # Charger les rasters
+  r_dem    <- terra::rast(terrain_rasters$dem)
+  r_slope  <- terra::rast(terrain_rasters$slope)
+  r_aspect <- terra::rast(terrain_rasters$aspect)
+  r_twi    <- terra::rast(terrain_rasters$twi)
+
+  # Convertir les points en SpatVector
+  if (inherits(points, "sf")) {
+    pts <- terra::vect(points)
+  } else if (is.data.frame(points) && all(c("longitude", "latitude") %in% names(points))) {
+    pts <- terra::vect(points, geom = c("longitude", "latitude"), crs = paste0("EPSG:", crs_points))
+  } else {
+    stop("points doit \u00eatre un sf ou un data.frame avec longitude/latitude")
+  }
+
+  # Reprojeter si nécessaire
+  if (!terra::same.crs(pts, r_dem)) {
+    pts <- terra::project(pts, r_dem)
+  }
+
+  # Extraire les valeurs
+  vals <- data.frame(
+    DEM_elevation  = terra::extract(r_dem, pts)[, 2],
+    DEM_slope      = terra::extract(r_slope, pts)[, 2],
+    DEM_aspect     = terra::extract(r_aspect, pts)[, 2],
+    DEM_TWI        = terra::extract(r_twi, pts)[, 2]
+  )
+
+  # Transformer l'exposition en sin/cos (variable circulaire)
+  aspect_rad <- vals$DEM_aspect * pi / 180
+  vals$DEM_aspect_sin <- sin(aspect_rad)
+  vals$DEM_aspect_cos <- cos(aspect_rad)
+
+  # Supprimer l'exposition brute (remplacée par sin/cos)
+  vals$DEM_aspect <- NULL
+
+  vals
+}
+
+# ==============================================================================
+# 8. NULL-SAFE OPERATOR
 # ==============================================================================
 
 `%||%` <- function(x, y) if (is.null(x)) y else x

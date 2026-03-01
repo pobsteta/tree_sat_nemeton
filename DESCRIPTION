@@ -59,6 +59,7 @@ Suggests:
     sen2r,
     stars,
     torch,
+    whitebox,
     xts,
     yaml,
     yardstick
