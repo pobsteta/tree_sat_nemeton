@@ -29,7 +29,7 @@ class TempCNN(nn.Module):
     suivi d'un Global Average Pooling et d'une couche FC.
     """
 
-    def __init__(self, n_channels=10, n_timesteps=73, n_classes=20,
+    def __init__(self, n_channels=10, n_timesteps=73, n_classes=21,
                  filters=(64, 128, 256), kernel_sizes=(7, 5, 3),
                  dropout=0.3):
         super().__init__()
@@ -82,7 +82,7 @@ class LSTMClassifier(nn.Module):
     Sortie : (batch, n_classes)
     """
 
-    def __init__(self, n_channels=10, n_timesteps=73, n_classes=20,
+    def __init__(self, n_channels=10, n_timesteps=73, n_classes=21,
                  hidden_size=128, n_layers=2, dropout=0.3):
         super().__init__()
 
@@ -127,7 +127,7 @@ class TransformerTS(nn.Module):
     Positional encoding + TransformerEncoder + CLS token pooling.
     """
 
-    def __init__(self, n_channels=10, n_timesteps=73, n_classes=20,
+    def __init__(self, n_channels=10, n_timesteps=73, n_classes=21,
                  d_model=128, n_heads=4, n_layers=3, dropout=0.2):
         super().__init__()
 
@@ -238,7 +238,7 @@ class InceptionTime(nn.Module):
     Sortie : (batch, n_classes)
     """
 
-    def __init__(self, n_channels=10, n_timesteps=73, n_classes=20,
+    def __init__(self, n_channels=10, n_timesteps=73, n_classes=21,
                  n_filters=32, n_blocks=3, dropout=0.2):
         super().__init__()
 
@@ -278,7 +278,7 @@ class MultiSourceTempCNN(nn.Module):
 
     def __init__(self, n_s2_channels=10, n_s2_timesteps=73,
                  n_s1_channels=3, n_s1_timesteps=30,
-                 n_classes=20, dropout=0.3):
+                 n_classes=21, dropout=0.3):
         super().__init__()
 
         # Branche S2 (optique)

@@ -60,7 +60,7 @@ S2_BAND_NAMES <- names(S2_BANDS)
 
 # --- Les 20 espèces européennes TreeSatAI ------------------------------------
 SPECIES <- data.frame(
-  code = 1:20,
+  code = 1:21,
   latin = c(
     "Quercus robur",           # Chêne pédonculé
     "Quercus petraea",         # Chêne sessile
@@ -81,7 +81,8 @@ SPECIES <- data.frame(
     "Pinus pinaster",          # Pin maritime
     "Pinus nigra",             # Pin noir
     "Pinus halepensis",        # Pin d'Alep
-    "Larix decidua"            # Mélèze d'Europe
+    "Larix decidua",           # Mélèze d'Europe
+    "Cleared"                  # Coupe rase / vide forestier
   ),
   french = c(
     "Chêne pédonculé", "Chêne sessile", "Chêne pubescent",
@@ -89,11 +90,13 @@ SPECIES <- data.frame(
     "Bouleau verruqueux", "Frêne commun", "Érable sycomore",
     "Peupliers", "Robinier faux-acacia", "Épicéa commun",
     "Sapin pectiné", "Douglas", "Pin sylvestre",
-    "Pin maritime", "Pin noir", "Pin d'Alep", "Mélèze d'Europe"
+    "Pin maritime", "Pin noir", "Pin d'Alep", "Mélèze d'Europe",
+    "Coupe/Vide"
   ),
   type = c(
     rep("feuillu", 12),
-    rep("résineux", 8)
+    rep("résineux", 8),
+    "non-boisé"                # Cleared : ni feuillu ni résineux
   ),
   phenologie = c(
     rep("caducifolié", 3),  # Chênes caducs
@@ -101,7 +104,8 @@ SPECIES <- data.frame(
     rep("caducifolié", 8),  # Autres feuillus caducs
     rep("sempervirent", 6), # Résineux persistants
     "sempervirent",          # Pin d'Alep
-    "caducifolié"            # Mélèze (résineux caduc !)
+    "caducifolié",           # Mélèze (résineux caduc !)
+    NA_character_            # Cleared : pas de phénologie
   ),
   stringsAsFactors = FALSE
 )
@@ -128,19 +132,22 @@ SPECIES_GROUPS <- c(
   "Pin maritime"         = "Autres Pins",
   "Pin noir"             = "Autres Pins",
   "Pin d'Alep"           = "Autres Pins",
-  "Mélèze d'Europe"      = "Mélèze"
+  "Mélèze d'Europe"      = "Mélèze",
+  "Coupe/Vide"           = "Coupe/Vide"
 )
 
 # Metadata des 10 groupes
 SPECIES_GROUPS_INFO <- data.frame(
   group = c("Chênes caducs", "Chêne vert", "Hêtre", "Châtaignier",
             "Autres feuillus", "Sapins-Épicéas", "Douglas",
-            "Pin sylvestre", "Autres Pins", "Mélèze"),
+            "Pin sylvestre", "Autres Pins", "Mélèze", "Coupe/Vide"),
   type = c("feuillu", "feuillu", "feuillu", "feuillu", "feuillu",
-           "résineux", "résineux", "résineux", "résineux", "résineux"),
+           "résineux", "résineux", "résineux", "résineux", "résineux",
+           "non-boisé"),
   phenologie = c("caducifolié", "sempervirent", "caducifolié", "caducifolié",
                  "caducifolié", "sempervirent", "sempervirent",
-                 "sempervirent", "sempervirent", "caducifolié"),
+                 "sempervirent", "sempervirent", "caducifolié",
+                 NA_character_),
   stringsAsFactors = FALSE
 )
 
@@ -155,15 +162,17 @@ SPECIES_GROUP_COLORS <- c(
   "Douglas"         = "#01665e",
   "Pin sylvestre"   = "#80cdc1",
   "Autres Pins"     = "#bf812d",
-  "Mélèze"          = "#dfc27d"
+  "Mélèze"          = "#dfc27d",
+  "Coupe/Vide"      = "#969696"
 )
 
-# Palette de couleurs par espèce (20 espèces — usage détaillé)
+# Palette de couleurs par espèce (21 classes : 20 essences + Cleared)
 SPECIES_COLORS <- c(
   "#1b9e77", "#d95f02", "#7570b3", "#e7298a", "#66a61e",
   "#e6ab02", "#a6761d", "#666666", "#8dd3c7", "#ffffb3",
   "#bebada", "#fb8072", "#003c30", "#01665e", "#35978f",
-  "#80cdc1", "#c7eae5", "#543005", "#bf812d", "#dfc27d"
+  "#80cdc1", "#c7eae5", "#543005", "#bf812d", "#dfc27d",
+  "#969696"   # Cleared — gris
 )
 names(SPECIES_COLORS) <- SPECIES$latin
 

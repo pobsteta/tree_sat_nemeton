@@ -555,11 +555,16 @@ GENUS_MAP <- list(
   Prunus       = list(french = "Prunus",                    code = 6),   # similaire Châtaignier
   Sorbus       = list(french = "Sorbier",                   code = 9),   # similaire Frêne
   Salix        = list(french = "Saule",                     code = 11),  # similaire Peuplier
-  Ulmus        = list(french = "Orme",                      code = 7)    # similaire Charme
+  Ulmus        = list(french = "Orme",                      code = 7),   # similaire Charme
+  # Classe non-arbre du dataset TreeSatAI original (coupe rase, vide forestier)
+  Cleared      = list(french = "Coupe/Vide",                code = 21)
 )
 
 # Classes non forestières à exclure de l'entraînement
-NON_TREE_CLASSES <- c("Cleared", "cleared", "NonForest", "non_forest", "Water", "Urban")
+# Note : "Cleared" est CONSERVÉ car il fait partie des 15 genres TreeSatAI.
+# C'est une classe importante pour détecter les coupes rases et les vides.
+# Seules les classes vraiment hors-sujet sont exclues.
+NON_TREE_CLASSES <- c("NonForest", "non_forest", "Water", "Urban")
 
 # ==============================================================================
 # Chargement complet des données TreeSatAI pour le pipeline

@@ -18,31 +18,34 @@ FIGURES_DIR = PROJECT_ROOT / "figures"
 for d in [DATA_DIR, RAW_DIR, PROCESSED_DIR, TS_DIR, OUTPUT_DIR, MODELS_DIR, FIGURES_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
-# --- Les 20 espèces européennes -----------------------------------------------
+# --- Les 21 classes (20 essences + Cleared) -----------------------------------
+# Classe 21 = Coupe/Vide (Cleared) : coupe rase, vide forestier
+# Présente dans le dataset TreeSatAI original (Basse-Saxe, Allemagne)
 SPECIES = {
-    1:  {"latin": "Quercus robur",          "french": "Chêne pédonculé",      "type": "feuillu",  "phenology": "deciduous"},
-    2:  {"latin": "Quercus petraea",         "french": "Chêne sessile",        "type": "feuillu",  "phenology": "deciduous"},
-    3:  {"latin": "Quercus pubescens",       "french": "Chêne pubescent",      "type": "feuillu",  "phenology": "deciduous"},
-    4:  {"latin": "Quercus ilex",            "french": "Chêne vert",           "type": "feuillu",  "phenology": "evergreen"},
-    5:  {"latin": "Fagus sylvatica",         "french": "Hêtre",                "type": "feuillu",  "phenology": "deciduous"},
-    6:  {"latin": "Castanea sativa",         "french": "Châtaignier",          "type": "feuillu",  "phenology": "deciduous"},
-    7:  {"latin": "Carpinus betulus",        "french": "Charme",               "type": "feuillu",  "phenology": "deciduous"},
-    8:  {"latin": "Betula pendula",          "french": "Bouleau verruqueux",   "type": "feuillu",  "phenology": "deciduous"},
-    9:  {"latin": "Fraxinus excelsior",      "french": "Frêne commun",         "type": "feuillu",  "phenology": "deciduous"},
-    10: {"latin": "Acer pseudoplatanus",     "french": "Érable sycomore",      "type": "feuillu",  "phenology": "deciduous"},
-    11: {"latin": "Populus spp.",            "french": "Peupliers",            "type": "feuillu",  "phenology": "deciduous"},
-    12: {"latin": "Robinia pseudoacacia",    "french": "Robinier faux-acacia", "type": "feuillu",  "phenology": "deciduous"},
-    13: {"latin": "Picea abies",             "french": "Épicéa commun",        "type": "résineux", "phenology": "evergreen"},
-    14: {"latin": "Abies alba",              "french": "Sapin pectiné",        "type": "résineux", "phenology": "evergreen"},
-    15: {"latin": "Pseudotsuga menziesii",   "french": "Douglas",              "type": "résineux", "phenology": "evergreen"},
-    16: {"latin": "Pinus sylvestris",        "french": "Pin sylvestre",        "type": "résineux", "phenology": "evergreen"},
-    17: {"latin": "Pinus pinaster",          "french": "Pin maritime",         "type": "résineux", "phenology": "evergreen"},
-    18: {"latin": "Pinus nigra",             "french": "Pin noir",             "type": "résineux", "phenology": "evergreen"},
-    19: {"latin": "Pinus halepensis",        "french": "Pin d'Alep",           "type": "résineux", "phenology": "evergreen"},
-    20: {"latin": "Larix decidua",           "french": "Mélèze d'Europe",      "type": "résineux", "phenology": "deciduous"},
+    1:  {"latin": "Quercus robur",          "french": "Chêne pédonculé",      "type": "feuillu",    "phenology": "deciduous"},
+    2:  {"latin": "Quercus petraea",         "french": "Chêne sessile",        "type": "feuillu",    "phenology": "deciduous"},
+    3:  {"latin": "Quercus pubescens",       "french": "Chêne pubescent",      "type": "feuillu",    "phenology": "deciduous"},
+    4:  {"latin": "Quercus ilex",            "french": "Chêne vert",           "type": "feuillu",    "phenology": "evergreen"},
+    5:  {"latin": "Fagus sylvatica",         "french": "Hêtre",                "type": "feuillu",    "phenology": "deciduous"},
+    6:  {"latin": "Castanea sativa",         "french": "Châtaignier",          "type": "feuillu",    "phenology": "deciduous"},
+    7:  {"latin": "Carpinus betulus",        "french": "Charme",               "type": "feuillu",    "phenology": "deciduous"},
+    8:  {"latin": "Betula pendula",          "french": "Bouleau verruqueux",   "type": "feuillu",    "phenology": "deciduous"},
+    9:  {"latin": "Fraxinus excelsior",      "french": "Frêne commun",         "type": "feuillu",    "phenology": "deciduous"},
+    10: {"latin": "Acer pseudoplatanus",     "french": "Érable sycomore",      "type": "feuillu",    "phenology": "deciduous"},
+    11: {"latin": "Populus spp.",            "french": "Peupliers",            "type": "feuillu",    "phenology": "deciduous"},
+    12: {"latin": "Robinia pseudoacacia",    "french": "Robinier faux-acacia", "type": "feuillu",    "phenology": "deciduous"},
+    13: {"latin": "Picea abies",             "french": "Épicéa commun",        "type": "résineux",   "phenology": "evergreen"},
+    14: {"latin": "Abies alba",              "french": "Sapin pectiné",        "type": "résineux",   "phenology": "evergreen"},
+    15: {"latin": "Pseudotsuga menziesii",   "french": "Douglas",              "type": "résineux",   "phenology": "evergreen"},
+    16: {"latin": "Pinus sylvestris",        "french": "Pin sylvestre",        "type": "résineux",   "phenology": "evergreen"},
+    17: {"latin": "Pinus pinaster",          "french": "Pin maritime",         "type": "résineux",   "phenology": "evergreen"},
+    18: {"latin": "Pinus nigra",             "french": "Pin noir",             "type": "résineux",   "phenology": "evergreen"},
+    19: {"latin": "Pinus halepensis",        "french": "Pin d'Alep",           "type": "résineux",   "phenology": "evergreen"},
+    20: {"latin": "Larix decidua",           "french": "Mélèze d'Europe",      "type": "résineux",   "phenology": "deciduous"},
+    21: {"latin": "Cleared",                 "french": "Coupe/Vide",           "type": "non-boisé",  "phenology": None},
 }
 
-SPECIES_NAMES = [SPECIES[i]["french"] for i in range(1, 21)]
+SPECIES_NAMES = [SPECIES[i]["french"] for i in range(1, 22)]
 N_CLASSES = len(SPECIES)
 
 # Bandes Sentinel-2

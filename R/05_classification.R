@@ -529,7 +529,7 @@ get_variable_importance <- function(model) {
 #' @param n_channels Nombre de canaux d'entrée (bandes spectrales)
 #' @param n_timesteps Nombre de pas de temps
 #' @param n_classes Nombre de classes de sortie
-define_temporal_cnn <- function(n_channels = 10, n_timesteps = 73, n_classes = 20) {
+define_temporal_cnn <- function(n_channels = 10, n_timesteps = 73, n_classes = 21) {
   if (!requireNamespace("torch", quietly = TRUE)) {
     cli::cli_alert_danger("Le package {.pkg torch} n'est pas installé.")
     cli::cli_text("Installer avec : {.code install.packages('torch'); torch::install_torch()}")
