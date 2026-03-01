@@ -254,12 +254,18 @@ DEM_PARAMS <- list(
   compute_slope  = TRUE,
   compute_aspect = TRUE,
   compute_twi    = TRUE,
+  compute_tpi    = TRUE,
 
   # Résolution de rééchantillonnage pour l'entraînement (mètres)
   resample_res = 10,
 
   # Plafond TWI (valeurs extrêmes dans les zones plates)
-  twi_max = 20
+  twi_max = 20,
+
+  # Rayon du filtre focal pour le TPI (en nombre de cellules)
+  # TPI = DEM - DEM_lissé (moyenne focale)
+  # 11 = fenêtre 11×11 pixels (110 m à 10 m de résolution)
+  tpi_window = 11
 )
 
 # --- Masque forestier (OSO + NDVI) --------------------------------------------

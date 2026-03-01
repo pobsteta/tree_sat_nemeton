@@ -862,18 +862,21 @@ extract_pixel_features <- function(cube_list, dates, block_size = 100,
       r_slope  <- terra::rast(terrain_rasters$slope)
       r_aspect <- terra::rast(terrain_rasters$aspect)
       r_twi    <- terra::rast(terrain_rasters$twi)
+      r_tpi    <- terra::rast(terrain_rasters$tpi)
 
-      # Rééchantillonner les rasters terrain sur la grille du cube S2
+      # R\u00e9\u00e9chantillonner les rasters terrain sur la grille du cube S2
       r_dem    <- terra::resample(r_dem, template, method = "bilinear")
       r_slope  <- terra::resample(r_slope, template, method = "bilinear")
       r_aspect <- terra::resample(r_aspect, template, method = "bilinear")
       r_twi    <- terra::resample(r_twi, template, method = "bilinear")
+      r_tpi    <- terra::resample(r_tpi, template, method = "bilinear")
 
-      # Extraire toutes les valeurs en une passe (n_pixels × 1)
+      # Extraire toutes les valeurs en une passe (n_pixels \u00d7 1)
       dem_v    <- as.numeric(terra::values(r_dem))
       slope_v  <- as.numeric(terra::values(r_slope))
       aspect_v <- as.numeric(terra::values(r_aspect))
       twi_v    <- as.numeric(terra::values(r_twi))
+      tpi_v    <- as.numeric(terra::values(r_tpi))
 
       # Convertir exposition en sin/cos
       aspect_rad <- aspect_v * pi / 180
@@ -882,9 +885,10 @@ extract_pixel_features <- function(cube_list, dates, block_size = 100,
         DEM_slope      = slope_v,
         DEM_aspect_sin = sin(aspect_rad),
         DEM_aspect_cos = cos(aspect_rad),
-        DEM_TWI        = twi_v
+        DEM_TWI        = twi_v,
+        DEM_TPI        = tpi_v
       )
-      log_msg("  Terrain chargé : {nrow(terrain_vals)} pixels × 5 features", level = "success")
+      log_msg("  Terrain charg\u00e9 : {nrow(terrain_vals)} pixels \u00d7 6 features", level = "success")
     }, error = function(e) {
       log_msg("  Erreur chargement terrain : {e$message}", level = "warning")
       terrain_vals <<- NULL
@@ -987,14 +991,15 @@ extract_pixel_features <- function(cube_list, dates, block_size = 100,
       features <- c(features, fourier)
     }
 
-    # 5. Features terrain (MNT, pente, exposition sin/cos, TWI)
+    # 5. Features terrain (MNT, pente, exposition sin/cos, TWI, TPI)
     if (!is.null(terrain_vals)) {
       px_terrain <- c(
         DEM_elevation  = terrain_vals$DEM_elevation[px_idx],
         DEM_slope      = terrain_vals$DEM_slope[px_idx],
         DEM_aspect_sin = terrain_vals$DEM_aspect_sin[px_idx],
         DEM_aspect_cos = terrain_vals$DEM_aspect_cos[px_idx],
-        DEM_TWI        = terrain_vals$DEM_TWI[px_idx]
+        DEM_TWI        = terrain_vals$DEM_TWI[px_idx],
+        DEM_TPI        = terrain_vals$DEM_TPI[px_idx]
       )
       # Remplacer les NA terrain par 0
       px_terrain[is.na(px_terrain)] <- 0

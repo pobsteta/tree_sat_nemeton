@@ -592,14 +592,15 @@ simulate_species_s1 <- function(species_code, dates, ndvi, noise_sd = 0.8) {
 #' Chaque espèce a un profil écologique typique (altitude, pente, exposition, humidité).
 #' Les valeurs sont tirées aléatoirement autour de ces moyennes.
 #'
-#' @param sp_code Code espèce (1-20)
-#' @param sample_id ID échantillon (pour reproductibilité)
-#' @return Vecteur nommé : elevation, slope, aspect_sin, aspect_cos, twi
+#' @param sp_code Code esp\u00e8ce (1-20)
+#' @param sample_id ID \u00e9chantillon (pour reproductibilit\u00e9)
+#' @return Vecteur nomm\u00e9 : elevation, slope, aspect_sin, aspect_cos, twi, tpi
 simulate_terrain_for_species <- function(sp_code, sample_id) {
-  # Profils écologiques moyens par espèce (altitude en m, pente en degrés, TWI)
-  # Basé sur les niches écologiques des espèces en France
+  # Profils \u00e9cologiques moyens par esp\u00e8ce (altitude en m, pente en degr\u00e9s, TWI, TPI)
+  # Bas\u00e9 sur les niches \u00e9cologiques des esp\u00e8ces en France
+  # TPI : positif = cr\u00eate, n\u00e9gatif = vall\u00e9e, ~0 = pente r\u00e9guli\u00e8re
   eco_profiles <- data.frame(
-    # code  elev_mean elev_sd slope_mean slope_sd twi_mean twi_sd  aspect_pref
+    # code  elev_mean elev_sd slope_mean slope_sd twi_mean twi_sd  tpi_mean tpi_sd
     code = 1:21,
     #          1    2    3    4    5    6    7    8    9   10
     #         11   12   13   14   15   16   17   18   19   20   21(Cleared)
@@ -613,6 +614,10 @@ simulate_terrain_for_species <- function(sp_code, sample_id) {
     twi   = c(10, 8, 7, 8, 7, 8, 10, 9, 12, 6,
               14, 9, 5, 5, 7, 6, 13, 6, 12, 4,  9),
     twi_sd = c(2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3),
+    # TPI : esp\u00e8ces de cr\u00eates (positif), esp\u00e8ces de fonds de vall\u00e9e (n\u00e9gatif)
+    tpi   = c(-1, 0, 2, -1, 3, 1, -2, 0, -3, 5,
+              -4, -2, 8, 6, 3, 4, -5, 2, -3, 10, 0),
+    tpi_sd = c(3, 3, 4, 3, 4, 3, 3, 3, 2, 5, 2, 3, 5, 5, 4, 5, 2, 4, 2, 6, 4),
     stringsAsFactors = FALSE
   )
 
@@ -622,14 +627,16 @@ simulate_terrain_for_species <- function(sp_code, sample_id) {
   elev      <- max(0, rnorm(1, prof$elev, prof$elev_sd))
   slope_deg <- max(0, rnorm(1, prof$slope, prof$slope_sd))
   twi       <- max(0, min(DEM_PARAMS$twi_max, rnorm(1, prof$twi, prof$twi_sd)))
-  aspect    <- runif(1, 0, 360)  # Exposition aléatoire (degrés)
+  tpi       <- rnorm(1, prof$tpi, prof$tpi_sd)
+  aspect    <- runif(1, 0, 360)  # Exposition al\u00e9atoire (degr\u00e9s)
 
   c(
     elevation  = elev,
     slope      = slope_deg,
     aspect_sin = sin(aspect * pi / 180),
     aspect_cos = cos(aspect * pi / 180),
-    twi        = twi
+    twi        = twi,
+    tpi        = tpi
   )
 }
 
@@ -721,6 +728,7 @@ generate_synthetic_dataset <- function(n_samples_per_species = 50, year = 2021) 
         DEM_aspect_sin = terrain["aspect_sin"],
         DEM_aspect_cos = terrain["aspect_cos"],
         DEM_TWI        = terrain["twi"],
+        DEM_TPI        = terrain["tpi"],
         stringsAsFactors = FALSE
       )
 
@@ -830,16 +838,14 @@ build_feature_matrix <- function(ts_long) {
       s1_features <- c(s1_features, calc_s1_temporal_features(vv_ts, vh_ts))
     }
 
-    # Features topographiques (MNT, pente, exposition, TWI)
+    # Features topographiques (MNT, pente, exposition, TWI, TPI)
     terrain_features <- c()
-    terrain_cols <- c("DEM_elevation", "DEM_slope", "DEM_aspect_sin", "DEM_aspect_cos", "DEM_TWI")
-    if (all(terrain_cols %in% names(plot_data))) {
-      terrain_features <- c(
-        DEM_elevation  = plot_data$DEM_elevation[1],
-        DEM_slope      = plot_data$DEM_slope[1],
-        DEM_aspect_sin = plot_data$DEM_aspect_sin[1],
-        DEM_aspect_cos = plot_data$DEM_aspect_cos[1],
-        DEM_TWI        = plot_data$DEM_TWI[1]
+    terrain_cols <- c("DEM_elevation", "DEM_slope", "DEM_aspect_sin", "DEM_aspect_cos", "DEM_TWI", "DEM_TPI")
+    available_terrain <- terrain_cols[terrain_cols %in% names(plot_data)]
+    if (length(available_terrain) > 0) {
+      terrain_features <- setNames(
+        as.numeric(plot_data[1, available_terrain]),
+        available_terrain
       )
     }
 

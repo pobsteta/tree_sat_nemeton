@@ -858,7 +858,7 @@ download_dem_copernicus <- function(aoi, output_dir = NULL) {
   dem_path
 }
 
-#' Calculer les dérivés topographiques (pente, exposition, TWI) depuis un MNT
+#' Calculer les dérivés topographiques (pente, exposition, TWI, TPI) depuis un MNT
 #'
 #' @param dem_path Chemin vers le raster DEM
 #' @param output_dir Répertoire de sortie (par défaut : même répertoire que le DEM)
@@ -945,17 +945,30 @@ compute_terrain_rasters <- function(dem_path, output_dir = NULL) {
   }
   results$twi <- twi_path
 
+  # --- TPI (Topographic Position Index) ---
+  # TPI = DEM - DEM_liss\u00e9 (moyenne focale)
+  # Positif = cr\u00eate/sommet, N\u00e9gatif = vall\u00e9e/fond, ~0 = pente r\u00e9guli\u00e8re
+  tpi_path <- file.path(output_dir, "tpi.tif")
+  if (!file.exists(tpi_path)) {
+    w <- DEM_PARAMS$tpi_window %||% 11
+    dem_smooth <- terra::focal(dem, w = matrix(1, w, w), fun = "mean", na.rm = TRUE)
+    tpi <- dem - dem_smooth
+    terra::writeRaster(tpi, tpi_path, overwrite = TRUE)
+    log_msg("  TPI calcul\u00e9 (fen\u00eatre {w}\u00d7{w}) : {tpi_path}", level = "info")
+  }
+  results$tpi <- tpi_path
+
   log_msg("D\u00e9riv\u00e9s topographiques pr\u00eats", level = "success")
   results
 }
 
-#' Extraire les valeurs terrain (MNT, pente, exposition, TWI) pour des points
+#' Extraire les valeurs terrain (MNT, pente, exposition, TWI, TPI) pour des points
 #'
 #' @param points sf object ou data.frame avec longitude/latitude
 #' @param terrain_rasters Liste des chemins raster (sortie de compute_terrain_rasters)
 #' @param crs_points CRS des coordonnées d'entrée (défaut : EPSG:2154)
-#' @return data.frame avec colonnes DEM_elevation, DEM_slope, DEM_aspect,
-#'   DEM_aspect_sin, DEM_aspect_cos, DEM_TWI
+#' @return data.frame avec colonnes DEM_elevation, DEM_slope, DEM_aspect_sin,
+#'   DEM_aspect_cos, DEM_TWI, DEM_TPI
 #' @export
 extract_terrain_at_points <- function(points, terrain_rasters, crs_points = 2154) {
   # Charger les rasters
@@ -963,6 +976,7 @@ extract_terrain_at_points <- function(points, terrain_rasters, crs_points = 2154
   r_slope  <- terra::rast(terrain_rasters$slope)
   r_aspect <- terra::rast(terrain_rasters$aspect)
   r_twi    <- terra::rast(terrain_rasters$twi)
+  r_tpi    <- terra::rast(terrain_rasters$tpi)
 
   # Convertir les points en SpatVector
   if (inherits(points, "sf")) {
@@ -973,7 +987,7 @@ extract_terrain_at_points <- function(points, terrain_rasters, crs_points = 2154
     stop("points doit \u00eatre un sf ou un data.frame avec longitude/latitude")
   }
 
-  # Reprojeter si nécessaire
+  # Reprojeter si n\u00e9cessaire
   if (!terra::same.crs(pts, r_dem)) {
     pts <- terra::project(pts, r_dem)
   }
@@ -983,7 +997,8 @@ extract_terrain_at_points <- function(points, terrain_rasters, crs_points = 2154
     DEM_elevation  = terra::extract(r_dem, pts)[, 2],
     DEM_slope      = terra::extract(r_slope, pts)[, 2],
     DEM_aspect     = terra::extract(r_aspect, pts)[, 2],
-    DEM_TWI        = terra::extract(r_twi, pts)[, 2]
+    DEM_TWI        = terra::extract(r_twi, pts)[, 2],
+    DEM_TPI        = terra::extract(r_tpi, pts)[, 2]
   )
 
   # Transformer l'exposition en sin/cos (variable circulaire)
@@ -991,7 +1006,7 @@ extract_terrain_at_points <- function(points, terrain_rasters, crs_points = 2154
   vals$DEM_aspect_sin <- sin(aspect_rad)
   vals$DEM_aspect_cos <- cos(aspect_rad)
 
-  # Supprimer l'exposition brute (remplacée par sin/cos)
+  # Supprimer l'exposition brute (remplac\u00e9e par sin/cos)
   vals$DEM_aspect <- NULL
 
   vals
