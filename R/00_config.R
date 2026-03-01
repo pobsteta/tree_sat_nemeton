@@ -278,6 +278,17 @@ FOREST_MASK_PARAMS <- list(
   # --- OSO (carte d'occupation du sol CESBIO) ---
   use_oso = TRUE,
 
+  # --- OCS GE (IGN, par département) ---
+  # Téléchargement par département via API Géoplateforme (GPKG, quelques Mo)
+  # API : https://data.geopf.fr/telechargement/resource/OCSGE
+  # Ref : https://geoservices.ign.fr/ocsge#telechargement
+  # Nomenclature couverture du sol (CS) :
+  #   CS2.1.1.1 = Peuplements de feuillus
+  #   CS2.1.1.2 = Peuplements de conifères
+  #   CS2.1.1.3 = Peuplements mixtes
+  ocsge_forest_pattern = "^CS2\\.1\\.1",
+
+  # --- OSO raster CESBIO (France entière, ~6 Go) ---
   # Source : Recherche Data Gouv (CESBIO/CNES)
   # DOI : 10.57745/UZ2NJ7
   # Format : GeoTIFF, 10 m, Lambert-93 (EPSG:2154), France métropolitaine
@@ -286,7 +297,7 @@ FOREST_MASK_PARAMS <- list(
   oso_download_url = "https://entrepot.recherche.data.gouv.fr/api/access/datafile/:persistentId?persistentId=doi:10.57745/8M1AN1",
   oso_manual_url   = "https://entrepot.recherche.data.gouv.fr/dataset.xhtml?persistentId=doi:10.57745/UZ2NJ7",
 
-  # Année OSO (doit correspondre à l'année d'analyse)
+  # Année (doit correspondre à l'année d'analyse)
   oso_year = 2021,
 
   # Classes OSO considérées comme forestières

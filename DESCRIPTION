@@ -44,6 +44,7 @@ Imports:
     viridis,
     zoo
 Suggests:
+    archive,
     Boruta,
     caret,
     curl,

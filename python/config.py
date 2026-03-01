@@ -81,7 +81,12 @@ TRAIN_CONFIG = {
 FOREST_MASK_CONFIG = {
     "apply_forest_mask": True,
 
-    # OSO (CESBIO) — carte d'occupation du sol annuelle 10 m
+    # OCS GE (IGN) — par département, GPKG via API Géoplateforme
+    # Nomenclature couverture : CS2.1.1.1=Feuillus, CS2.1.1.2=Conifères, CS2.1.1.3=Mixte
+    # Ref : https://geoservices.ign.fr/ocsge#telechargement
+    "ocsge_forest_pattern": r"^CS2\.1\.1",
+
+    # OSO (CESBIO) — carte d'occupation du sol annuelle 10 m (fallback ~6 Go)
     # Source : Recherche Data Gouv (doi:10.57745/UZ2NJ7)
     "use_oso": True,
     "oso_year": 2021,

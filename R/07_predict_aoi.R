@@ -25,16 +25,20 @@
 #' Stratégie multi-source (du plus léger au plus lourd) :
 #'
 #'   1. **WFS Géoplateforme IGN** (prioritaire, quelques Ko) :
-#'      - OCS GE : couche `OCSGE.COUVERTURE:couverture` (Occupation du Sol Grande Échelle)
-#'      - BD Forêt V2 : couche `LANDCOVER.FORESTINVENTORY.V2:formation_vegetale`
+#'      BD Forêt V2 : couche `LANDCOVER.FORESTINVENTORY.V2:formation_vegetale`
 #'      Accès libre, données vectorielles découpées à la bbox, rasterisées sur place.
 #'      Ref : https://geoservices.ign.fr/services-web-experts-ocsge
 #'
-#'   2. **OSO raster CESBIO** (~6 Go, cache global Recherche Data Gouv) :
+#'   2. **OCS GE par département** (GPKG, quelques dizaines de Mo) :
+#'      Téléchargement via l'API Géoplateforme, archives .7z par département.
+#'      Nomenclature couverture : CS2.1.1.1 = Feuillus, CS2.1.1.2 = Conifères,
+#'      CS2.1.1.3 = Mixte. Ref : https://geoservices.ign.fr/ocsge#telechargement
+#'
+#'   3. **OSO raster CESBIO** (~6 Go, cache global Recherche Data Gouv) :
 #'      Raster 10 m France entière, classes 16 = Feuillus / 17 = Conifères.
 #'      Ref : https://entrepot.recherche.data.gouv.fr/dataset.xhtml?persistentId=doi:10.57745/UZ2NJ7
 #'
-#'   3. **Fichier local** : recherche dans data/raw/, data/, cache global.
+#'   4. **Fichier local** : recherche dans data/raw/, data/, cache global.
 #'
 #' @param aoi sf object — zone d'intérêt
 #' @param year Année (pour la correspondance millésime OCS GE / OSO)
@@ -137,7 +141,239 @@ download_oso <- function(aoi, year = FOREST_MASK_PARAMS$oso_year,
   if (wfs_ok) return(oso_file)
 
   # =====================================================================
-  # Stratégie 2 : OSO raster CESBIO (Recherche Data Gouv, ~6 Go)
+  # Stratégie 2 : OCS GE par département (GPKG via API Géoplateforme)
+  # =====================================================================
+  # L'OCS GE (Occupation du Sol à Grande Échelle, IGN) est disponible en
+  # téléchargement par département au format GeoPackage (.7z).
+  # Nomenclature couverture du sol (CS) :
+  #   CS2.1.1.1 = Peuplements de feuillus
+  #   CS2.1.1.2 = Peuplements de conifères
+  #   CS2.1.1.3 = Peuplements mixtes
+  # Ref : https://geoservices.ign.fr/ocsge#telechargement
+
+  log_msg("  Tentative OCS GE par département (Géoplateforme)...")
+  ocsge_ok <- tryCatch({
+    # Déterminer le département à partir du centroïde de l'AOI
+    centroid <- sf::st_coordinates(sf::st_centroid(aoi_wgs84))
+    lon_c <- centroid[1, "X"]
+    lat_c <- centroid[1, "Y"]
+
+    # Géocodage inverse pour obtenir le code département
+    rev_url <- paste0(
+      "https://data.geopf.fr/geocodage/reverse?lon=", lon_c,
+      "&lat=", lat_c, "&type=municipality&limit=1"
+    )
+    rev_resp <- httr2::request(rev_url) |>
+      httr2::req_timeout(15) |>
+      httr2::req_perform()
+    rev_json <- httr2::resp_body_json(rev_resp)
+
+    dept_code <- NULL
+    if (length(rev_json$features) > 0) {
+      props <- rev_json$features[[1]]$properties
+      # Le code INSEE de la commune : 2 premiers caractères = département
+      # (sauf Corse 2A/2B et DOM 97x)
+      code_insee <- props$citycode %||% props$postcode %||% ""
+      if (nchar(code_insee) >= 5) {
+        if (startsWith(code_insee, "97")) {
+          dept_code <- substr(code_insee, 1, 3)  # DOM : 971, 972...
+        } else if (startsWith(code_insee, "20")) {
+          # Corse : déterminer 2A ou 2B à partir du code commune
+          cc <- as.integer(substr(code_insee, 3, 5))
+          dept_code <- if (!is.na(cc) && cc >= 1 && cc <= 360) "2A" else "2B"
+        } else {
+          dept_code <- substr(code_insee, 1, 2)
+        }
+      }
+    }
+
+    if (is.null(dept_code) || nchar(dept_code) == 0) {
+      log_msg("  Impossible de déterminer le département", level = "warning")
+      stop("département inconnu")
+    }
+
+    # Formater le code département pour l'API (D001, D02A, D971, etc.)
+    dept_zone <- paste0("D", formatC(dept_code, width = 3, flag = "0", format = "s"))
+    # Supprimer les espaces pour les codes numériques à 2 chiffres (D001→D001 OK, D2A→D02A)
+    if (grepl("^[0-9]+$", dept_code)) {
+      dept_zone <- paste0("D", formatC(as.integer(dept_code), width = 3, flag = "0"))
+    } else {
+      dept_zone <- paste0("D0", dept_code)  # D02A, D02B
+    }
+    log_msg("  Département détecté : {dept_code} (zone {dept_zone})")
+
+    # Interroger l'API Géoplateforme pour trouver les fichiers OCS GE disponibles
+    api_url <- paste0(
+      "https://data.geopf.fr/telechargement/resource/OCSGE",
+      "?format=GPKG&zone=", dept_zone, "&page=1&limit=50"
+    )
+    api_resp <- httr2::request(api_url) |>
+      httr2::req_timeout(30) |>
+      httr2::req_perform()
+    api_json <- httr2::resp_body_json(api_resp)
+
+    # Chercher le jeu de données couverture (pas DIFF, pas ARTIF)
+    entries <- api_json$datasets %||% api_json$entries %||% api_json
+    dataset_name <- NULL
+    for (entry in entries) {
+      nm <- entry$name %||% entry$title %||% ""
+      # Exclure les fichiers DIFF (différentiel) et ARTIF (artificialisation)
+      if (grepl("GPKG", nm) && !grepl("DIFF", nm) && !grepl("ARTIF", nm)) {
+        dataset_name <- nm
+        break
+      }
+    }
+
+    # Si pas de GPKG couverture, essayer SHP
+    if (is.null(dataset_name)) {
+      api_url_shp <- paste0(
+        "https://data.geopf.fr/telechargement/resource/OCSGE",
+        "?format=SHP&zone=", dept_zone, "&page=1&limit=50"
+      )
+      api_resp_shp <- httr2::request(api_url_shp) |>
+        httr2::req_timeout(30) |>
+        httr2::req_perform()
+      api_json_shp <- httr2::resp_body_json(api_resp_shp)
+      entries_shp <- api_json_shp$datasets %||% api_json_shp$entries %||% api_json_shp
+      for (entry in entries_shp) {
+        nm <- entry$name %||% entry$title %||% ""
+        if (grepl("SHP", nm) && !grepl("DIFF", nm) && !grepl("ARTIF", nm)) {
+          dataset_name <- nm
+          break
+        }
+      }
+    }
+
+    if (is.null(dataset_name)) {
+      log_msg("  OCS GE non disponible pour le département {dept_code}", level = "warning")
+      stop("OCS GE non disponible")
+    }
+
+    log_msg("  OCS GE trouvé : {dataset_name}")
+
+    # Télécharger l'archive .7z
+    ocsge_cache <- file.path(
+      rappdirs::user_cache_dir("treesatnemeton"), "ocsge"
+    )
+    dir.create(ocsge_cache, showWarnings = FALSE, recursive = TRUE)
+    archive_file <- file.path(ocsge_cache, paste0(dataset_name, ".7z"))
+
+    if (!file.exists(archive_file)) {
+      dl_url <- paste0(
+        "https://data.geopf.fr/telechargement/download/OCSGE/",
+        dataset_name, "/", dataset_name, ".7z"
+      )
+      log_msg("  Téléchargement OCS GE {dept_code}...")
+      utils::download.file(dl_url, archive_file, mode = "wb", quiet = TRUE)
+    }
+
+    # Extraire l'archive .7z
+    extract_dir <- file.path(ocsge_cache, dataset_name)
+    if (!dir.exists(extract_dir)) {
+      log_msg("  Extraction de l'archive .7z...")
+      if (requireNamespace("archive", quietly = TRUE)) {
+        archive::archive_extract(archive_file, dir = extract_dir)
+      } else {
+        # Fallback : commande système 7z ou p7zip
+        sys_7z <- Sys.which("7z")
+        if (nchar(sys_7z) == 0) sys_7z <- Sys.which("7za")
+        if (nchar(sys_7z) == 0) {
+          log_msg("  Package 'archive' ou commande '7z' requis pour OCS GE .7z",
+                  level = "warning")
+          stop("extraction .7z impossible")
+        }
+        dir.create(extract_dir, showWarnings = FALSE, recursive = TRUE)
+        system2(sys_7z, args = c("x", "-y", paste0("-o", extract_dir),
+                                  archive_file), stdout = FALSE, stderr = FALSE)
+      }
+    }
+
+    # Trouver le fichier GPKG ou SHP
+    gpkg_files <- list.files(extract_dir, pattern = "\\.gpkg$",
+                              recursive = TRUE, full.names = TRUE)
+    shp_files <- list.files(extract_dir, pattern = "\\.shp$",
+                             recursive = TRUE, full.names = TRUE)
+
+    ocsge_sf <- NULL
+    if (length(gpkg_files) > 0) {
+      # Lire le GPKG — chercher la couche couverture
+      lyrs <- sf::st_layers(gpkg_files[1])$name
+      couv_lyr <- lyrs[grepl("couverture", lyrs, ignore.case = TRUE)]
+      if (length(couv_lyr) == 0) couv_lyr <- lyrs[1]
+      ocsge_sf <- sf::st_read(gpkg_files[1], layer = couv_lyr[1], quiet = TRUE)
+    } else if (length(shp_files) > 0) {
+      # Chercher le shapefile couverture
+      couv_shp <- shp_files[grepl("couverture", shp_files, ignore.case = TRUE)]
+      if (length(couv_shp) == 0) couv_shp <- shp_files[1]
+      ocsge_sf <- sf::st_read(couv_shp[1], quiet = TRUE)
+    }
+
+    if (is.null(ocsge_sf) || nrow(ocsge_sf) == 0) {
+      log_msg("  Aucune donnée couverture trouvée dans l'archive", level = "warning")
+      stop("couverture vide")
+    }
+
+    log_msg("  OCS GE : {nrow(ocsge_sf)} polygones chargés")
+
+    # Filtrer les formations arborées (CS2.1.1.*)
+    # Le champ code_cs contient les codes de nomenclature
+    cs_col <- intersect(names(ocsge_sf), c("code_cs", "CODE_CS", "couverture",
+                                            "COUVERTURE", "code_couv"))
+    if (length(cs_col) == 0) {
+      # Chercher une colonne contenant des valeurs CS
+      for (cn in names(ocsge_sf)) {
+        if (is.character(ocsge_sf[[cn]])) {
+          sample_vals <- head(stats::na.omit(ocsge_sf[[cn]]), 20)
+          if (any(grepl("^CS", sample_vals))) {
+            cs_col <- cn
+            break
+          }
+        }
+      }
+    }
+    if (length(cs_col) == 0) {
+      log_msg("  Colonne code_cs non trouvée dans OCS GE", level = "warning")
+      stop("code_cs absent")
+    }
+    cs_col <- cs_col[1]
+
+    # Formations arborées : CS2.1.1.1 (feuillus), CS2.1.1.2 (conifères), CS2.1.1.3 (mixte)
+    forest_pattern <- "^CS2\\.1\\.1"
+    forest_polys <- ocsge_sf[grepl(forest_pattern, ocsge_sf[[cs_col]]), ]
+
+    if (nrow(forest_polys) == 0) {
+      log_msg("  Aucune formation arborée (CS2.1.1.*) dans la zone", level = "warning")
+      stop("pas de forêt OCS GE")
+    }
+    log_msg("  {nrow(forest_polys)} polygones forestiers (CS2.1.1.*)")
+
+    # Reprojeter et découper à l'AOI
+    forest_polys <- sf::st_transform(forest_polys, 2154)
+    forest_polys <- sf::st_intersection(forest_polys, sf::st_geometry(aoi_proj))
+
+    # Rastériser
+    aoi_ext <- terra::ext(terra::vect(aoi_proj))
+    template <- terra::rast(aoi_ext, resolution = resolution, crs = "EPSG:2154")
+    forest_vect <- terra::vect(forest_polys)
+    r_forest <- terra::rasterize(forest_vect, template, field = 1, background = 0)
+    names(r_forest) <- "forest"
+
+    aoi_vect <- terra::vect(aoi_proj)
+    r_forest <- terra::mask(r_forest, aoi_vect)
+
+    terra::writeRaster(r_forest, oso_file, datatype = "INT1U", overwrite = TRUE)
+    log_msg("  Masque forêt (OCS GE {dept_code}) sauvegardé : {oso_file}",
+            level = "success")
+    TRUE
+  }, error = function(e) {
+    log_msg("  OCS GE par département échoué : {e$message}", level = "warning")
+    FALSE
+  })
+
+  if (ocsge_ok) return(oso_file)
+
+  # =====================================================================
+  # Stratégie 3 : OSO raster CESBIO (Recherche Data Gouv, ~6 Go)
   # =====================================================================
   log_msg("  Tentative OSO raster (Recherche Data Gouv)...")
 
@@ -231,7 +467,7 @@ download_oso <- function(aoi, year = FOREST_MASK_PARAMS$oso_year,
   }
 
   # =====================================================================
-  # Stratégie 3 : Fichier local existant
+  # Stratégie 4 : Fichier local existant
   # =====================================================================
   if (!file.exists(oso_global)) {
     search_dirs <- unique(c(RAW_DIR, DATA_DIR, output_dir, global_cache))
@@ -277,8 +513,8 @@ download_oso <- function(aoi, year = FOREST_MASK_PARAMS$oso_year,
 #' Convertit le raster d'occupation du sol en masque binaire forêt (1) / non-forêt (0),
 #' rééchantillonné sur la grille du cube Sentinel-2.
 #'
-#' Gère deux cas :
-#'   - BD Forêt V2 (via WFS) : déjà binaire (1 = forêt, 0 = non-forêt)
+#' Gère trois cas :
+#'   - BD Forêt V2 / OCS GE (via WFS ou téléchargement) : déjà binaire (1 = forêt, 0 = non-forêt)
 #'   - OSO CESBIO : classes 16 = Feuillus, 17 = Conifères → binaire
 #'
 #' @param oso_path Chemin vers le raster d'occupation du sol
