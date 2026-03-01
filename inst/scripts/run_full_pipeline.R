@@ -5,15 +5,20 @@
 # Ce script :
 #   1. Installe/charge le package treesatnemeton
 #   2. Télécharge le dataset TreeSatAI-Time-Series depuis HuggingFace
-#   3. Entraîne un modèle Random Forest (14 genres forestiers)
+#   3. Entraîne un modèle Random Forest (10 classes forestières)
+#      — regroupement automatique des 20 espèces en 10 classes
+#      — pondération des classes déséquilibrées
+#      — sélection de features par Boruta
+#      — support multi-année (features moyennées sur N ans)
 #   4. Produit une carte des essences sur votre AOI
 #
 # Modes d'utilisation :
 #   - Données réelles TreeSatAI (défaut) : télécharge depuis HuggingFace
-#   - Données synthétiques : USE_SYNTHETIC <- TRUE (test rapide, pas de téléchargement)
+#   - Données synthétiques : USE_SYNTHETIC <- TRUE (test rapide)
 #
 # Prérequis :
 #   - R >= 4.1 avec les packages remotes, sf, terra, ranger installés
+#   - Boruta recommandé : install.packages("Boruta")
 #   - Fichier data/aoi.gpkg pour la prédiction spatiale (étape 3)
 #   - ~30 Go d'espace disque pour le dataset complet (mode réel)
 #   - Connexion internet
@@ -22,12 +27,14 @@
 # --- Configuration -----------------------------------------------------------
 USE_SYNTHETIC <- FALSE   # TRUE = test rapide avec données synthétiques
 N_SAMPLES     <- 50      # Nombre d'échantillons par espèce (mode synthétique)
-YEAR          <- 2021    # Année de simulation / prédiction
+YEARS         <- c(2019, 2020, 2021)  # Vecteur d'années (multi-année)
+                                       # Mettre NULL ou c(2021) pour mono-année
+USE_BORUTA    <- TRUE    # Sélection de features par Boruta
 SKIP_PREDICT  <- FALSE   # TRUE = ne pas lancer la prédiction spatiale
 
 # --- 0. Nettoyage et installation du package ---------------------------------
 all_objs <- ls()
-keep <- c("USE_SYNTHETIC", "N_SAMPLES", "YEAR", "SKIP_PREDICT")
+keep <- c("USE_SYNTHETIC", "N_SAMPLES", "YEARS", "USE_BORUTA", "SKIP_PREDICT")
 rm(list = setdiff(all_objs, keep))
 rm(all_objs, keep)
 gc()
@@ -60,18 +67,10 @@ if (!USE_SYNTHETIC) {
   cat("  Étape 1 — Téléchargement TreeSatAI depuis HuggingFace\n")
   cat("================================================================\n\n")
 
-  # Labels + split + geojson (~10 Mo) — indispensable
-  # sentinel-ts (~30 Go) — séries temporelles S1+S2 (optionnel, fallback synthétique)
   download_treesatai_hf(
     dest_dir   = file.path(DATA_DIR, "treesatai"),
     components = c("labels", "split", "geojson")
   )
-
-  # Ajouter "sentinel-ts" aux components pour télécharger les séries temporelles :
-  # download_treesatai_hf(
-  #   dest_dir   = file.path(DATA_DIR, "treesatai"),
-  #   components = c("labels", "split", "geojson", "sentinel-ts")
-  # )
 
   cat("\nDonnées TreeSatAI prêtes.\n\n")
 } else {
@@ -84,7 +83,17 @@ if (!USE_SYNTHETIC) {
 # --- 2. Entraînement du modèle -----------------------------------------------
 cat("================================================================\n")
 cat("  Étape 2 — Entraînement du modèle Random Forest\n")
-cat("================================================================\n\n")
+cat("================================================================\n")
+
+use_multiyear <- !is.null(YEARS) && length(YEARS) > 1
+if (use_multiyear) {
+  cat("  Multi-année :", paste(YEARS, collapse = ", "), "\n")
+}
+if (USE_BORUTA) {
+  cat("  Sélection de features : Boruta\n")
+}
+cat("  Classes : 10 groupes forestiers\n")
+cat("  Pondération : inverse frequency weighting\n\n")
 
 # Supprimer l'ancien modèle s'il existe
 old_model <- file.path(MODELS_DIR, "treesatai_rf.rds")
@@ -95,24 +104,26 @@ if (file.exists(old_model)) {
 
 # Lancer l'entraînement
 # train_treesatai() gère automatiquement :
-#   - Le chargement des labels et du split TreeSatAI
-#   - La lecture des patches HDF5 ou la génération synthétique (fallback)
-#   - Le filtrage des classes non-forestières (Cleared, etc.)
-#   - La construction de la matrice de features
+#   - Le regroupement 20 espèces → 10 classes
+#   - La pondération des classes déséquilibrées
+#   - La sélection de features par Boruta (si use_boruta = TRUE)
+#   - La construction multi-année (si years est un vecteur > 1 an)
 #   - L'entraînement, l'évaluation et les visualisations
 if (USE_SYNTHETIC) {
   result_train <- train_treesatai(
-    data_path  = NULL,
-    mode       = "rf",
-    n_samples  = N_SAMPLES,
-    year       = YEAR,
-    skip_viz   = FALSE
+    data_path    = NULL,
+    mode         = "rf",
+    n_samples    = N_SAMPLES,
+    years        = YEARS,
+    use_boruta   = USE_BORUTA,
+    skip_viz     = FALSE
   )
 } else {
   result_train <- train_treesatai(
-    data_path  = file.path(DATA_DIR, "treesatai"),
-    mode       = "rf",
-    skip_viz   = FALSE
+    data_path    = file.path(DATA_DIR, "treesatai"),
+    mode         = "rf",
+    use_boruta   = USE_BORUTA,
+    skip_viz     = FALSE
   )
 }
 
@@ -123,12 +134,18 @@ cat("  Résultats de l'entraînement\n")
 cat("================================================================\n\n")
 
 if (!is.null(result_train$evaluation)) {
-  cat("  OA    :", round(result_train$evaluation$overall_accuracy * 100, 1), "%\n")
-  cat("  Kappa :", round(result_train$evaluation$kappa, 3), "\n")
+  cat("  OA       :", round(result_train$evaluation$overall_accuracy * 100, 1), "%\n")
+  cat("  Kappa    :", round(result_train$evaluation$kappa, 3), "\n")
   if (!is.null(result_train$evaluation$macro_f1)) {
-    cat("  F1    :", round(result_train$evaluation$macro_f1 * 100, 1), "%\n")
+    cat("  F1       :", round(result_train$evaluation$macro_f1 * 100, 1), "%\n")
   }
   cat("  Features :", length(result_train$feature_cols), "\n")
+  if (use_multiyear) {
+    cat("  Années   :", paste(YEARS, collapse = ", "), "\n")
+  }
+  if (!is.null(result_train$boruta)) {
+    cat("  Boruta   : actif\n")
+  }
   cat("  Modèle   :", file.path(MODELS_DIR, "treesatai_rf.rds"), "\n\n")
 } else {
   cat("  Pas d'évaluation disponible.\n\n")
@@ -146,7 +163,7 @@ if (!SKIP_PREDICT) {
     result <- predict_species_map(
       aoi_path      = aoi_file,
       auto_download = TRUE,
-      year          = YEAR,
+      year          = if (use_multiyear) max(YEARS) else YEARS[1],
       resolution    = 10
     )
 
