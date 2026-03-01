@@ -474,7 +474,7 @@ predict_species_map <- function(aoi_path,
                                  output_dir   = OUTPUT_DIR,
                                  resolution   = 10,
                                  auto_download = FALSE,
-                                 use_s1       = FALSE,
+                                 use_s1       = TRUE,
                                  use_pytorch  = FALSE,
                                  pytorch_model = "tempcnn") {
 
@@ -834,15 +834,42 @@ extract_s1_pixel_features <- function(s1_cube, pixel_features) {
     s1_arrays[[pol]] <- pol_mat
   }
 
+  # Dates cibles pour les labels DOY (cohérent avec build_feature_matrix)
+  s1_dates <- as.Date(names(s1_cube))
+  s1_year <- format(s1_dates[1], "%Y")
+  s1_target_dates <- seq.Date(
+    as.Date(paste0(s1_year, "-01-01")),
+    as.Date(paste0(s1_year, "-12-31")),
+    by = TS_PARAMS$target_interval_days
+  )
+  s1_doy_labels <- format(s1_target_dates, "%j")
+
   # Extraire les features S1 par pixel
   feature_list <- vector("list", n_valid)
 
   for (i in seq_len(n_valid)) {
     px <- valid_idx[i]
-    vv_ts <- s1_arrays$VV[px, ]
-    vh_ts <- s1_arrays$VH[px, ]
+    vv_raw <- s1_arrays$VV[px, ]
+    vh_raw <- s1_arrays$VH[px, ]
 
-    feature_list[[i]] <- calc_s1_temporal_features(vv_ts, vh_ts)
+    # Interpolation aux dates cibles (comme pour S2)
+    vv_ts <- interpolate_ts(s1_dates, vv_raw, s1_target_dates)
+    vh_ts <- interpolate_ts(s1_dates, vh_raw, s1_target_dates)
+
+    # Lissage
+    if (!all(is.na(vv_ts))) vv_ts <- smooth_savgol(vv_ts)
+    if (!all(is.na(vh_ts))) vh_ts <- smooth_savgol(vh_ts)
+
+    features <- c()
+
+    # Série temporelle brute par DOY (cohérent avec build_feature_matrix)
+    features <- c(features, setNames(vv_ts, paste0("S1_VV_d", s1_doy_labels)))
+    features <- c(features, setNames(vh_ts, paste0("S1_VH_d", s1_doy_labels)))
+
+    # Statistiques temporelles + indices radar
+    features <- c(features, calc_s1_temporal_features(vv_ts, vh_ts))
+
+    feature_list[[i]] <- features
   }
 
   # Assembler en matrice

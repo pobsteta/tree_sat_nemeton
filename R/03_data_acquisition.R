@@ -488,6 +488,66 @@ double_logistic <- function(doy, ndvi_min, ndvi_max, sos, peak, eos) {
   ndvi
 }
 
+#' Simulation de rétrodiffusion radar Sentinel-1 (VV/VH en dB) par espèce
+#' @param species_code Code espèce (1-20)
+#' @param dates Vecteur de dates
+#' @param ndvi Vecteur NDVI simulé (pour corrélation avec le signal radar)
+#' @param noise_sd Écart-type du bruit (dB)
+#' @return data.frame avec colonnes S1_VV et S1_VH
+simulate_species_s1 <- function(species_code, dates, ndvi, noise_sd = 0.8) {
+  doy <- as.numeric(format(dates, "%j"))
+  sp  <- SPECIES[species_code, ]
+  n   <- length(dates)
+
+  # Paramètres de base par type d'espèce (valeurs en dB)
+  # VH est sensible au volume de biomasse, VV à la structure de surface
+  if (sp$type == "résineux") {
+    # Résineux : rétrodiffusion plus forte (canopée dense), peu de variation saisonnière
+    s1_params <- switch(sp$french,
+      "Épicéa commun"   = list(vv_base = -7.0,  vh_base = -13.0, vv_amp = 0.5, vh_amp = 0.8),
+      "Sapin pectiné"   = list(vv_base = -6.5,  vh_base = -12.5, vv_amp = 0.5, vh_amp = 0.7),
+      "Douglas"         = list(vv_base = -7.5,  vh_base = -13.5, vv_amp = 0.6, vh_amp = 0.9),
+      "Pin sylvestre"   = list(vv_base = -8.0,  vh_base = -14.0, vv_amp = 0.7, vh_amp = 1.0),
+      "Pin maritime"    = list(vv_base = -8.5,  vh_base = -14.5, vv_amp = 0.6, vh_amp = 0.9),
+      "Pin noir"        = list(vv_base = -7.8,  vh_base = -13.8, vv_amp = 0.5, vh_amp = 0.8),
+      "Pin d'Alep"      = list(vv_base = -9.0,  vh_base = -15.0, vv_amp = 0.8, vh_amp = 1.1),
+      "Mélèze d'Europe" = list(vv_base = -8.5,  vh_base = -14.5, vv_amp = 2.0, vh_amp = 2.5),
+      list(vv_base = -8.0, vh_base = -14.0, vv_amp = 0.6, vh_amp = 0.9)
+    )
+  } else {
+    # Feuillus : variation saisonnière plus marquée (feuilles on/off)
+    s1_params <- switch(sp$french,
+      "Chêne pédonculé"  = list(vv_base = -7.5,  vh_base = -13.0, vv_amp = 1.5, vh_amp = 2.5),
+      "Chêne sessile"    = list(vv_base = -7.8,  vh_base = -13.2, vv_amp = 1.4, vh_amp = 2.4),
+      "Chêne pubescent"  = list(vv_base = -8.0,  vh_base = -13.5, vv_amp = 1.6, vh_amp = 2.6),
+      "Chêne vert"       = list(vv_base = -7.0,  vh_base = -12.5, vv_amp = 0.5, vh_amp = 0.8),
+      "Hêtre"            = list(vv_base = -6.5,  vh_base = -12.0, vv_amp = 1.8, vh_amp = 3.0),
+      "Châtaignier"      = list(vv_base = -7.2,  vh_base = -12.8, vv_amp = 1.6, vh_amp = 2.7),
+      "Charme"           = list(vv_base = -7.5,  vh_base = -13.0, vv_amp = 1.5, vh_amp = 2.5),
+      "Bouleau verruqueux" = list(vv_base = -9.0, vh_base = -15.0, vv_amp = 2.0, vh_amp = 3.2),
+      "Frêne commun"     = list(vv_base = -7.8,  vh_base = -13.5, vv_amp = 1.7, vh_amp = 2.8),
+      "Érable sycomore"  = list(vv_base = -7.3,  vh_base = -13.0, vv_amp = 1.5, vh_amp = 2.5),
+      "Peupliers"        = list(vv_base = -8.5,  vh_base = -14.0, vv_amp = 2.2, vh_amp = 3.5),
+      "Robinier faux-acacia" = list(vv_base = -8.0, vh_base = -13.5, vv_amp = 1.8, vh_amp = 2.8),
+      list(vv_base = -8.0, vh_base = -13.5, vv_amp = 1.5, vh_amp = 2.5)
+    )
+  }
+
+  # Variabilité individuelle
+  s1_params$vv_base <- s1_params$vv_base + runif(1, -0.5, 0.5)
+  s1_params$vh_base <- s1_params$vh_base + runif(1, -0.5, 0.5)
+
+  # Composante saisonnière corrélée au NDVI
+  # Le signal radar augmente avec la biomasse foliaire
+  ndvi_norm <- (ndvi - min(ndvi, na.rm = TRUE)) /
+    (max(ndvi, na.rm = TRUE) - min(ndvi, na.rm = TRUE) + 1e-10)
+
+  vv <- s1_params$vv_base + s1_params$vv_amp * ndvi_norm + rnorm(n, 0, noise_sd)
+  vh <- s1_params$vh_base + s1_params$vh_amp * ndvi_norm + rnorm(n, 0, noise_sd)
+
+  data.frame(S1_VV = vv, S1_VH = vh)
+}
+
 #' Génération d'un dataset synthétique complet pour les 20 espèces
 #' @param n_samples_per_species Nombre d'échantillons par espèce
 #' @param year Année de simulation
@@ -551,6 +611,9 @@ generate_synthetic_dataset <- function(n_samples_per_species = 50, year = 2021) 
       idx_cri   <- (1 / (bands$B02 + 1e-10)) - (1 / (bands$B03 + 1e-10))
       idx_rendvi <- (bands$B06 - bands$B05) / (bands$B06 + bands$B05 + 1e-10)
 
+      # Simuler les données radar Sentinel-1 (VV/VH en dB)
+      s1_data <- simulate_species_s1(sp_code, target_dates, ndvi)
+
       plot_df <- data.frame(
         plot_id      = plot_id,
         species_code = sp_code,
@@ -563,6 +626,7 @@ generate_synthetic_dataset <- function(n_samples_per_species = 50, year = 2021) 
         NBR    = idx_nbr,
         CRI    = idx_cri,
         RENDVI = idx_rendvi,
+        s1_data,
         stringsAsFactors = FALSE
       )
 
@@ -658,9 +722,23 @@ build_feature_matrix <- function(ts_long) {
       idx_features <- c(idx_features, fourier)
     }
 
+    # Features Sentinel-1 (radar)
+    s1_features <- c()
+    if (all(c("S1_VV", "S1_VH") %in% names(plot_data))) {
+      vv_ts <- plot_data$S1_VV
+      vh_ts <- plot_data$S1_VH
+
+      # Série temporelle brute par DOY
+      s1_features <- c(s1_features, setNames(vv_ts, paste0("S1_VV_d", doy_labels)))
+      s1_features <- c(s1_features, setNames(vh_ts, paste0("S1_VH_d", doy_labels)))
+
+      # Statistiques temporelles + indices radar (via calc_s1_temporal_features)
+      s1_features <- c(s1_features, calc_s1_temporal_features(vv_ts, vh_ts))
+    }
+
     rows[[k]] <- c(plot_id = pid, species_code = species_code,
                    species_name = species_name,
-                   band_features, idx_features)
+                   band_features, idx_features, s1_features)
   }
 
   cli::cli_progress_done()
