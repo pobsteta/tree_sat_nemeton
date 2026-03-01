@@ -1421,7 +1421,7 @@ predict_species_map <- function(aoi_path,
     stop("Fournissez s2_dir ou utilisez auto_download = TRUE")
   }
 
-  # --- 3b. Données terrain (MNT, pente, exposition, TWI) ---
+  # --- 3b. Données terrain (MNT, pente, exposition, TWI, TPI) ---
   terrain_rasters <- NULL
   if (isTRUE(CLASSIF_PARAMS$use_terrain)) {
     cli::cli_h2("3b. Données terrain (MNT + dérivés)")
@@ -1478,7 +1478,7 @@ predict_species_map <- function(aoi_path,
         }
       )
       if (!is.null(terrain_rasters)) {
-        log_msg("Terrain prêt : MNT + pente + exposition + TWI", level = "success")
+        log_msg("Terrain prêt : MNT + pente + exposition + TWI + TPI", level = "success")
       }
     } else {
       log_msg("Pas de MNT disponible — classification sans features terrain", level = "warning")

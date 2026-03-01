@@ -218,7 +218,7 @@ CLASSIF_PARAMS <- list(
   use_spectral_indices = TRUE,  # Indices spectraux calculés
   use_phenometrics     = TRUE,  # Métriques phénologiques extraites
   use_temporal_stats   = TRUE,  # Statistiques temporelles (mean, sd, etc.)
-  use_terrain          = TRUE,  # Features topographiques (MNT, pente, exposition, TWI)
+  use_terrain          = TRUE,  # Features topographiques (MNT, pente, exposition, TWI, TPI)
 
   # --- Classification soft (probabilités) ---
   # Exporter les probabilités complètes par essence (raster multi-bandes)
