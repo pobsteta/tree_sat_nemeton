@@ -84,33 +84,51 @@ download_oso <- function(aoi, year = FOREST_MASK_PARAMS$oso_year,
       sep = ","
     )
 
-    wfs_request <- paste0(
-      wfs_url,
-      "?SERVICE=WFS",
-      "&VERSION=2.0.0",
-      "&REQUEST=GetFeature",
-      "&TYPENAMES=", typename,
-      "&BBOX=", bbox_str, ",EPSG:4326",
-      "&OUTPUTFORMAT=application/json",
-      "&COUNT=50000"
-    )
+    # --- Pagination WFS : récupérer TOUS les polygones ---
+    # Le serveur Géoplateforme limite souvent à 1000-5000 features par
+    # requête. On pagine avec STARTINDEX + COUNT jusqu'à épuisement.
+    page_size <- 5000L
+    start_idx <- 0L
+    all_features <- list()
 
-    tmp_json <- tempfile(fileext = ".json")
-    resp <- httr2::request(wfs_request) |>
-      httr2::req_timeout(60) |>
-      httr2::req_perform()
+    repeat {
+      wfs_request <- paste0(
+        wfs_url,
+        "?SERVICE=WFS",
+        "&VERSION=2.0.0",
+        "&REQUEST=GetFeature",
+        "&TYPENAMES=", typename,
+        "&BBOX=", bbox_str, ",EPSG:4326",
+        "&OUTPUTFORMAT=application/json",
+        "&COUNT=", page_size,
+        "&STARTINDEX=", start_idx
+      )
 
-    httr2::resp_body_raw(resp) |> writeBin(tmp_json)
+      tmp_json <- tempfile(fileext = ".json")
+      resp <- httr2::request(wfs_request) |>
+        httr2::req_timeout(120) |>
+        httr2::req_perform()
 
-    # Lire le GeoJSON
-    bdforet <- sf::st_read(tmp_json, quiet = TRUE)
-    unlink(tmp_json)
+      httr2::resp_body_raw(resp) |> writeBin(tmp_json)
+      page_sf <- sf::st_read(tmp_json, quiet = TRUE)
+      unlink(tmp_json)
 
-    if (nrow(bdforet) == 0) {
+      if (nrow(page_sf) == 0) break
+
+      all_features <- c(all_features, list(page_sf))
+      log_msg("  WFS page : {start_idx + nrow(page_sf)} polygones récupérés...")
+
+      # Si on a reçu moins que page_size, c'est la dernière page
+      if (nrow(page_sf) < page_size) break
+      start_idx <- start_idx + page_size
+    }
+
+    if (length(all_features) == 0) {
       log_msg("  Aucune formation végétale trouvée via WFS", level = "warning")
       FALSE
     } else {
-      log_msg("  BD Forêt V2 : {nrow(bdforet)} polygones récupérés", level = "success")
+      bdforet <- do.call(rbind, all_features)
+      log_msg("  BD Forêt V2 : {nrow(bdforet)} polygones récupérés (total)", level = "success")
 
       # Reprojeter en Lambert-93
       bdforet <- sf::st_transform(bdforet, 2154)
@@ -153,208 +171,227 @@ download_oso <- function(aoi, year = FOREST_MASK_PARAMS$oso_year,
 
   log_msg("  Tentative OCS GE par département (Géoplateforme)...")
   ocsge_ok <- tryCatch({
-    # Déterminer le département à partir du centroïde de l'AOI
-    centroid <- sf::st_coordinates(sf::st_centroid(aoi_wgs84))
-    lon_c <- centroid[1, "X"]
-    lat_c <- centroid[1, "Y"]
-
-    # Géocodage inverse pour obtenir le code département
-    rev_url <- paste0(
-      "https://data.geopf.fr/geocodage/reverse?lon=", lon_c,
-      "&lat=", lat_c, "&type=municipality&limit=1"
+    # --- Déterminer TOUS les départements couverts par l'AOI ---
+    # Échantillonner le centroïde + les coins de la bbox pour détecter
+    # les AOIs chevauchant plusieurs départements.
+    bbox_w <- bbox_wgs84["xmin"]; bbox_e <- bbox_wgs84["xmax"]
+    bbox_s <- bbox_wgs84["ymin"]; bbox_n <- bbox_wgs84["ymax"]
+    sample_pts <- data.frame(
+      lon = c(
+        (bbox_w + bbox_e) / 2,  # centroïde
+        bbox_w, bbox_e, bbox_w, bbox_e  # 4 coins
+      ),
+      lat = c(
+        (bbox_s + bbox_n) / 2,
+        bbox_s, bbox_s, bbox_n, bbox_n
+      )
     )
-    rev_resp <- httr2::request(rev_url) |>
-      httr2::req_timeout(15) |>
-      httr2::req_perform()
-    rev_json <- httr2::resp_body_json(rev_resp)
 
-    dept_code <- NULL
-    if (length(rev_json$features) > 0) {
-      props <- rev_json$features[[1]]$properties
-      # Le code INSEE de la commune : 2 premiers caractères = département
-      # (sauf Corse 2A/2B et DOM 97x)
-      code_insee <- props$citycode %||% props$postcode %||% ""
-      if (nchar(code_insee) >= 5) {
+    # Fonction interne : code département depuis coordonnées WGS84
+    .get_dept_code <- function(lon, lat) {
+      tryCatch({
+        rev_url <- paste0(
+          "https://data.geopf.fr/geocodage/reverse?lon=", lon,
+          "&lat=", lat, "&type=municipality&limit=1"
+        )
+        rev_resp <- httr2::request(rev_url) |>
+          httr2::req_timeout(10) |>
+          httr2::req_perform()
+        rev_json <- httr2::resp_body_json(rev_resp)
+        if (length(rev_json$features) == 0) return(NULL)
+        props <- rev_json$features[[1]]$properties
+        code_insee <- props$citycode %||% props$postcode %||% ""
+        if (nchar(code_insee) < 5) return(NULL)
         if (startsWith(code_insee, "97")) {
-          dept_code <- substr(code_insee, 1, 3)  # DOM : 971, 972...
+          substr(code_insee, 1, 3)
         } else if (startsWith(code_insee, "20")) {
-          # Corse : déterminer 2A ou 2B à partir du code commune
           cc <- as.integer(substr(code_insee, 3, 5))
-          dept_code <- if (!is.na(cc) && cc >= 1 && cc <= 360) "2A" else "2B"
+          if (!is.na(cc) && cc >= 1 && cc <= 360) "2A" else "2B"
         } else {
-          dept_code <- substr(code_insee, 1, 2)
+          substr(code_insee, 1, 2)
         }
-      }
+      }, error = function(e) NULL)
     }
 
-    if (is.null(dept_code) || nchar(dept_code) == 0) {
-      log_msg("  Impossible de déterminer le département", level = "warning")
+    # Récupérer les départements uniques
+    dept_codes <- unique(Filter(Negate(is.null), lapply(
+      seq_len(nrow(sample_pts)),
+      function(i) .get_dept_code(sample_pts$lon[i], sample_pts$lat[i])
+    )))
+    dept_codes <- unique(unlist(dept_codes))
+
+    if (length(dept_codes) == 0) {
+      log_msg("  Impossible de déterminer le(s) département(s)", level = "warning")
       stop("département inconnu")
     }
 
-    # Formater le code département pour l'API (D001, D02A, D971, etc.)
-    dept_zone <- paste0("D", formatC(dept_code, width = 3, flag = "0", format = "s"))
-    # Supprimer les espaces pour les codes numériques à 2 chiffres (D001→D001 OK, D2A→D02A)
-    if (grepl("^[0-9]+$", dept_code)) {
-      dept_zone <- paste0("D", formatC(as.integer(dept_code), width = 3, flag = "0"))
-    } else {
-      dept_zone <- paste0("D0", dept_code)  # D02A, D02B
-    }
-    log_msg("  Département détecté : {dept_code} (zone {dept_zone})")
+    log_msg("  Département(s) détecté(s) : {paste(dept_codes, collapse = ', ')}")
 
-    # Interroger l'API Géoplateforme pour trouver les fichiers OCS GE disponibles
-    api_url <- paste0(
-      "https://data.geopf.fr/telechargement/resource/OCSGE",
-      "?format=GPKG&zone=", dept_zone, "&page=1&limit=50"
-    )
-    api_resp <- httr2::request(api_url) |>
-      httr2::req_timeout(30) |>
-      httr2::req_perform()
-    api_json <- httr2::resp_body_json(api_resp)
-
-    # Chercher le jeu de données couverture (pas DIFF, pas ARTIF)
-    entries <- api_json$datasets %||% api_json$entries %||% api_json
-    dataset_name <- NULL
-    for (entry in entries) {
-      nm <- entry$name %||% entry$title %||% ""
-      # Exclure les fichiers DIFF (différentiel) et ARTIF (artificialisation)
-      if (grepl("GPKG", nm) && !grepl("DIFF", nm) && !grepl("ARTIF", nm)) {
-        dataset_name <- nm
-        break
+    # Fonction interne : formater le code département pour l'API
+    .format_dept_zone <- function(dc) {
+      if (grepl("^[0-9]+$", dc)) {
+        paste0("D", formatC(as.integer(dc), width = 3, flag = "0"))
+      } else {
+        paste0("D0", dc)  # D02A, D02B
       }
     }
 
-    # Si pas de GPKG couverture, essayer SHP
-    if (is.null(dataset_name)) {
-      api_url_shp <- paste0(
-        "https://data.geopf.fr/telechargement/resource/OCSGE",
-        "?format=SHP&zone=", dept_zone, "&page=1&limit=50"
-      )
-      api_resp_shp <- httr2::request(api_url_shp) |>
-        httr2::req_timeout(30) |>
-        httr2::req_perform()
-      api_json_shp <- httr2::resp_body_json(api_resp_shp)
-      entries_shp <- api_json_shp$datasets %||% api_json_shp$entries %||% api_json_shp
-      for (entry in entries_shp) {
-        nm <- entry$name %||% entry$title %||% ""
-        if (grepl("SHP", nm) && !grepl("DIFF", nm) && !grepl("ARTIF", nm)) {
-          dataset_name <- nm
-          break
-        }
-      }
-    }
-
-    if (is.null(dataset_name)) {
-      log_msg("  OCS GE non disponible pour le département {dept_code}", level = "warning")
-      stop("OCS GE non disponible")
-    }
-
-    log_msg("  OCS GE trouvé : {dataset_name}")
-
-    # Télécharger l'archive .7z
+    # --- Télécharger et fusionner les polygones forestiers de chaque département ---
     ocsge_cache <- file.path(
       rappdirs::user_cache_dir("treesatnemeton"), "ocsge"
     )
     dir.create(ocsge_cache, showWarnings = FALSE, recursive = TRUE)
-    archive_file <- file.path(ocsge_cache, paste0(dataset_name, ".7z"))
 
-    if (!file.exists(archive_file)) {
-      dl_url <- paste0(
-        "https://data.geopf.fr/telechargement/download/OCSGE/",
-        dataset_name, "/", dataset_name, ".7z"
-      )
-      log_msg("  Téléchargement OCS GE {dept_code}...")
-      utils::download.file(dl_url, archive_file, mode = "wb", quiet = TRUE)
-    }
+    all_forest_polys <- list()
 
-    # Extraire l'archive .7z
-    extract_dir <- file.path(ocsge_cache, dataset_name)
-    if (!dir.exists(extract_dir)) {
-      log_msg("  Extraction de l'archive .7z...")
-      if (requireNamespace("archive", quietly = TRUE)) {
-        archive::archive_extract(archive_file, dir = extract_dir)
-      } else {
-        # Fallback : commande système 7z ou p7zip
-        sys_7z <- Sys.which("7z")
-        if (nchar(sys_7z) == 0) sys_7z <- Sys.which("7za")
-        if (nchar(sys_7z) == 0) {
-          log_msg("  Package 'archive' ou commande '7z' requis pour OCS GE .7z",
-                  level = "warning")
-          stop("extraction .7z impossible")
-        }
-        dir.create(extract_dir, showWarnings = FALSE, recursive = TRUE)
-        system2(sys_7z, args = c("x", "-y", paste0("-o", extract_dir),
-                                  archive_file), stdout = FALSE, stderr = FALSE)
-      }
-    }
+    for (dept_code in dept_codes) {
+      dept_zone <- .format_dept_zone(dept_code)
+      log_msg("  Traitement OCS GE département {dept_code} (zone {dept_zone})...")
 
-    # Trouver le fichier GPKG ou SHP
-    gpkg_files <- list.files(extract_dir, pattern = "\\.gpkg$",
-                              recursive = TRUE, full.names = TRUE)
-    shp_files <- list.files(extract_dir, pattern = "\\.shp$",
-                             recursive = TRUE, full.names = TRUE)
-
-    ocsge_sf <- NULL
-    if (length(gpkg_files) > 0) {
-      # Lire le GPKG — chercher la couche couverture
-      lyrs <- sf::st_layers(gpkg_files[1])$name
-      couv_lyr <- lyrs[grepl("couverture", lyrs, ignore.case = TRUE)]
-      if (length(couv_lyr) == 0) couv_lyr <- lyrs[1]
-      ocsge_sf <- sf::st_read(gpkg_files[1], layer = couv_lyr[1], quiet = TRUE)
-    } else if (length(shp_files) > 0) {
-      # Chercher le shapefile couverture
-      couv_shp <- shp_files[grepl("couverture", shp_files, ignore.case = TRUE)]
-      if (length(couv_shp) == 0) couv_shp <- shp_files[1]
-      ocsge_sf <- sf::st_read(couv_shp[1], quiet = TRUE)
-    }
-
-    if (is.null(ocsge_sf) || nrow(ocsge_sf) == 0) {
-      log_msg("  Aucune donnée couverture trouvée dans l'archive", level = "warning")
-      stop("couverture vide")
-    }
-
-    log_msg("  OCS GE : {nrow(ocsge_sf)} polygones chargés")
-
-    # Filtrer les formations arborées (CS2.1.1.*)
-    # Le champ code_cs contient les codes de nomenclature
-    cs_col <- intersect(names(ocsge_sf), c("code_cs", "CODE_CS", "couverture",
-                                            "COUVERTURE", "code_couv"))
-    if (length(cs_col) == 0) {
-      # Chercher une colonne contenant des valeurs CS
-      for (cn in names(ocsge_sf)) {
-        if (is.character(ocsge_sf[[cn]])) {
-          sample_vals <- head(stats::na.omit(ocsge_sf[[cn]]), 20)
-          if (any(grepl("^CS", sample_vals))) {
-            cs_col <- cn
+      # Interroger l'API Géoplateforme pour trouver les fichiers OCS GE
+      dataset_name <- NULL
+      for (fmt in c("GPKG", "SHP")) {
+        api_url <- paste0(
+          "https://data.geopf.fr/telechargement/resource/OCSGE",
+          "?format=", fmt, "&zone=", dept_zone, "&page=1&limit=50"
+        )
+        api_resp <- tryCatch(
+          httr2::request(api_url) |>
+            httr2::req_timeout(30) |>
+            httr2::req_perform(),
+          error = function(e) NULL
+        )
+        if (is.null(api_resp)) next
+        api_json <- httr2::resp_body_json(api_resp)
+        entries <- api_json$datasets %||% api_json$entries %||% api_json
+        for (entry in entries) {
+          nm <- entry$name %||% entry$title %||% ""
+          if (grepl(fmt, nm) && !grepl("DIFF", nm) && !grepl("ARTIF", nm)) {
+            dataset_name <- nm
             break
           }
         }
+        if (!is.null(dataset_name)) break
       }
-    }
-    if (length(cs_col) == 0) {
-      log_msg("  Colonne code_cs non trouvée dans OCS GE", level = "warning")
-      stop("code_cs absent")
-    }
-    cs_col <- cs_col[1]
 
-    # Formations arborées : CS2.1.1.1 (feuillus), CS2.1.1.2 (conifères), CS2.1.1.3 (mixte)
-    forest_pattern <- "^CS2\\.1\\.1"
-    forest_polys <- ocsge_sf[grepl(forest_pattern, ocsge_sf[[cs_col]]), ]
+      if (is.null(dataset_name)) {
+        log_msg("  OCS GE non disponible pour {dept_code}", level = "warning")
+        next
+      }
 
-    if (nrow(forest_polys) == 0) {
+      log_msg("  OCS GE trouvé : {dataset_name}")
+
+      # Télécharger l'archive .7z
+      archive_file <- file.path(ocsge_cache, paste0(dataset_name, ".7z"))
+
+      if (!file.exists(archive_file)) {
+        dl_url <- paste0(
+          "https://data.geopf.fr/telechargement/download/OCSGE/",
+          dataset_name, "/", dataset_name, ".7z"
+        )
+        log_msg("  Téléchargement OCS GE {dept_code}...")
+        utils::download.file(dl_url, archive_file, mode = "wb", quiet = TRUE)
+      }
+
+      # Extraire l'archive .7z
+      extract_dir <- file.path(ocsge_cache, dataset_name)
+      if (!dir.exists(extract_dir)) {
+        log_msg("  Extraction de l'archive .7z...")
+        if (requireNamespace("archive", quietly = TRUE)) {
+          archive::archive_extract(archive_file, dir = extract_dir)
+        } else {
+          sys_7z <- Sys.which("7z")
+          if (nchar(sys_7z) == 0) sys_7z <- Sys.which("7za")
+          if (nchar(sys_7z) == 0) {
+            log_msg("  Package 'archive' ou commande '7z' requis pour OCS GE .7z",
+                    level = "warning")
+            next
+          }
+          dir.create(extract_dir, showWarnings = FALSE, recursive = TRUE)
+          system2(sys_7z, args = c("x", "-y", paste0("-o", extract_dir),
+                                    archive_file), stdout = FALSE, stderr = FALSE)
+        }
+      }
+
+      # Trouver le fichier GPKG ou SHP
+      gpkg_files <- list.files(extract_dir, pattern = "\\.gpkg$",
+                                recursive = TRUE, full.names = TRUE)
+      shp_files <- list.files(extract_dir, pattern = "\\.shp$",
+                               recursive = TRUE, full.names = TRUE)
+
+      ocsge_sf <- NULL
+      if (length(gpkg_files) > 0) {
+        lyrs <- sf::st_layers(gpkg_files[1])$name
+        couv_lyr <- lyrs[grepl("couverture", lyrs, ignore.case = TRUE)]
+        if (length(couv_lyr) == 0) couv_lyr <- lyrs[1]
+        ocsge_sf <- sf::st_read(gpkg_files[1], layer = couv_lyr[1], quiet = TRUE)
+      } else if (length(shp_files) > 0) {
+        couv_shp <- shp_files[grepl("couverture", shp_files, ignore.case = TRUE)]
+        if (length(couv_shp) == 0) couv_shp <- shp_files[1]
+        ocsge_sf <- sf::st_read(couv_shp[1], quiet = TRUE)
+      }
+
+      if (is.null(ocsge_sf) || nrow(ocsge_sf) == 0) {
+        log_msg("  Aucune donnée couverture pour {dept_code}", level = "warning")
+        next
+      }
+
+      log_msg("  OCS GE {dept_code} : {nrow(ocsge_sf)} polygones chargés")
+
+      # Filtrer les formations arborées (CS2.1.1.*)
+      cs_col <- intersect(names(ocsge_sf), c("code_cs", "CODE_CS", "couverture",
+                                              "COUVERTURE", "code_couv"))
+      if (length(cs_col) == 0) {
+        for (cn in names(ocsge_sf)) {
+          if (is.character(ocsge_sf[[cn]])) {
+            sample_vals <- head(stats::na.omit(ocsge_sf[[cn]]), 20)
+            if (any(grepl("^CS", sample_vals))) {
+              cs_col <- cn
+              break
+            }
+          }
+        }
+      }
+      if (length(cs_col) == 0) {
+        log_msg("  Colonne code_cs non trouvée pour {dept_code}", level = "warning")
+        next
+      }
+      cs_col <- cs_col[1]
+
+      forest_pattern <- "^CS2\\.1\\.1"
+      forest_polys <- ocsge_sf[grepl(forest_pattern, ocsge_sf[[cs_col]]), ]
+
+      if (nrow(forest_polys) > 0) {
+        forest_polys <- sf::st_transform(forest_polys, 2154)
+        all_forest_polys <- c(all_forest_polys, list(forest_polys))
+        log_msg("  {nrow(forest_polys)} polygones forestiers pour {dept_code}")
+      }
+    }  # fin boucle départements
+
+    if (length(all_forest_polys) == 0) {
       log_msg("  Aucune formation arborée (CS2.1.1.*) dans la zone", level = "warning")
       stop("pas de forêt OCS GE")
     }
-    log_msg("  {nrow(forest_polys)} polygones forestiers (CS2.1.1.*)")
 
-    # Reprojeter et découper à l'AOI
-    forest_polys <- sf::st_transform(forest_polys, 2154)
-    forest_polys <- sf::st_intersection(forest_polys, sf::st_geometry(aoi_proj))
+    # Fusionner les polygones de tous les départements
+    if (length(all_forest_polys) > 1) {
+      # Uniformiser les colonnes avant rbind
+      common_cols <- Reduce(intersect, lapply(all_forest_polys, names))
+      all_forest_polys <- lapply(all_forest_polys, function(x) x[, common_cols])
+      forest_merged <- do.call(rbind, all_forest_polys)
+    } else {
+      forest_merged <- all_forest_polys[[1]]
+    }
+
+    log_msg("  Total : {nrow(forest_merged)} polygones forestiers ({length(dept_codes)} département(s))")
+
+    # Découper à l'AOI
+    forest_merged <- sf::st_intersection(forest_merged, sf::st_geometry(aoi_proj))
 
     # Rastériser
     aoi_ext <- terra::ext(terra::vect(aoi_proj))
     template <- terra::rast(aoi_ext, resolution = resolution, crs = "EPSG:2154")
-    forest_vect <- terra::vect(forest_polys)
+    forest_vect <- terra::vect(forest_merged)
     r_forest <- terra::rasterize(forest_vect, template, field = 1, background = 0)
     names(r_forest) <- "forest"
 
@@ -362,7 +399,7 @@ download_oso <- function(aoi, year = FOREST_MASK_PARAMS$oso_year,
     r_forest <- terra::mask(r_forest, aoi_vect)
 
     terra::writeRaster(r_forest, oso_file, datatype = "INT1U", overwrite = TRUE)
-    log_msg("  Masque forêt (OCS GE {dept_code}) sauvegardé : {oso_file}",
+    log_msg("  Masque forêt (OCS GE {paste(dept_codes, collapse='/')}) sauvegardé : {oso_file}",
             level = "success")
     TRUE
   }, error = function(e) {
@@ -490,16 +527,25 @@ download_oso <- function(aoi, year = FOREST_MASK_PARAMS$oso_year,
   }
 
   # Découper le raster OSO à l'AOI
-  log_msg("  Découpe OSO à l'AOI...")
+  # IMPORTANT : on découpe à la bbox élargie (+ 500 m de marge) et NON au
+
+  # polygone exact, pour que le rééchantillonnage sur la grille S2 dans
+  # build_oso_forest_mask() ne produise pas de NA en bordure.
+  log_msg("  Découpe OSO à l'AOI (bbox + marge)...")
   tryCatch({
     r <- terra::rast(oso_global)
     aoi_vect <- terra::vect(aoi_proj)
     if (!terra::same.crs(r, aoi_vect)) {
       aoi_vect <- terra::project(aoi_vect, terra::crs(r))
     }
-    r_crop <- terra::crop(r, aoi_vect)
-    r_mask <- terra::mask(r_crop, aoi_vect)
-    terra::writeRaster(r_mask, oso_file, datatype = "INT1U", overwrite = TRUE)
+    # Étendre la bbox de 500 m pour couvrir les pixels de bordure du cube S2
+    crop_ext <- terra::ext(aoi_vect)
+    crop_ext[1] <- crop_ext[1] - 500  # xmin
+    crop_ext[2] <- crop_ext[2] + 500  # xmax
+    crop_ext[3] <- crop_ext[3] - 500  # ymin
+    crop_ext[4] <- crop_ext[4] + 500  # ymax
+    r_crop <- terra::crop(r, crop_ext)
+    terra::writeRaster(r_crop, oso_file, datatype = "INT1U", overwrite = TRUE)
     log_msg("  OSO découpé sauvegardé : {oso_file}", level = "success")
     return(oso_file)
   }, error = function(e) {
@@ -526,6 +572,28 @@ build_oso_forest_mask <- function(oso_path, template,
                                    forest_classes = FOREST_MASK_PARAMS$oso_forest_classes) {
   r_oso <- terra::rast(oso_path)
 
+  # Vérifier la couverture spatiale OSO vs template S2
+  oso_ext <- terra::ext(r_oso)
+  tpl_ext <- terra::ext(template)
+  if (!terra::same.crs(r_oso, template)) {
+    # Reprojeter si CRS différents
+    r_oso <- terra::project(r_oso, template, method = "near")
+    oso_ext <- terra::ext(r_oso)
+  }
+
+  # Diagnostic de couverture
+  n_total <- terra::ncell(template)
+  covers_fully <- (oso_ext[1] <= tpl_ext[1]) && (oso_ext[2] >= tpl_ext[2]) &&
+                  (oso_ext[3] <= tpl_ext[3]) && (oso_ext[4] >= tpl_ext[4])
+
+  if (!covers_fully) {
+    log_msg("  Attention : le raster OSO ne couvre pas entièrement le template S2", level = "warning")
+    log_msg("  OSO ext : {round(oso_ext[1])}, {round(oso_ext[2])}, {round(oso_ext[3])}, {round(oso_ext[4])}")
+    log_msg("  S2  ext : {round(tpl_ext[1])}, {round(tpl_ext[2])}, {round(tpl_ext[3])}, {round(tpl_ext[4])}")
+    # Étendre le raster OSO à l'emprise du template (NA pour les pixels manquants)
+    r_oso <- terra::extend(r_oso, template)
+  }
+
   # Rééchantillonner sur la grille S2 (nearest neighbor pour catégoriel)
   r_oso <- terra::resample(r_oso, template, method = "near")
 
@@ -543,6 +611,14 @@ build_oso_forest_mask <- function(oso_path, template,
     mask_vals <- as.integer(oso_vals %in% forest_classes)
   }
   mask_vals[is.na(oso_vals)] <- 0L
+
+  # Diagnostic couverture
+  n_na <- sum(is.na(oso_vals))
+  if (n_na > 0) {
+    pct_na <- round(n_na / n_total * 100, 1)
+    log_msg("  OSO : {n_na}/{n_total} pixels sans donnée ({pct_na}%) → traités comme non-forêt",
+            level = if (pct_na > 5) "warning" else "info")
+  }
 
   r_mask <- terra::rast(template)
   terra::values(r_mask) <- mask_vals
