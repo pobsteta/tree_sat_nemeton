@@ -450,7 +450,14 @@ simulate_species_ndvi <- function(species_code, dates, noise_sd = 0.03) {
 
   set.seed(species_code * 100 + as.numeric(dates[1]))
 
-  if (sp$phenologie == "sempervirent") {
+  # Coupe/Vide (phenologie = NA) : sol nu / végétation herbacée basse
+  if (is.na(sp$phenologie)) {
+    base_ndvi <- runif(1, 0.10, 0.25)
+    # Légère poussée herbacée au printemps/été
+    amplitude <- runif(1, 0.05, 0.15)
+    ndvi <- base_ndvi + amplitude * sin(2 * pi * (doy - 90) / 365)
+
+  } else if (sp$phenologie == "sempervirent") {
     # Profil relativement plat, NDVI élevé toute l'année
     base_ndvi <- switch(sp$french,
       "Chêne vert"      = 0.65,
