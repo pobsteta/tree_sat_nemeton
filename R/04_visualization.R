@@ -580,10 +580,12 @@ build_s2_rgb_composite <- function(cube_list, dates = NULL) {
 #' @param output_dir R\u00e9pertoire de sortie
 #' @param s2_rgb SpatRaster 3 bandes (R, G, B) pour le fond satellite (NULL = pas de fond)
 #' @param aoi sf object \u2014 contour de la zone d'int\u00e9r\u00eat (NULL = pas de contour)
+#' @param forest_mask SpatRaster binaire du masque forestier (NULL = pas de carte masque)
 #' @return Chemin vers le fichier PDF (invisible)
 #' @export
 generate_prediction_report_pdf <- function(rasters, statistics, output_dir,
-                                            s2_rgb = NULL, aoi = NULL) {
+                                            s2_rgb = NULL, aoi = NULL,
+                                            forest_mask = NULL) {
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
   pdf_path <- file.path(output_dir, "rapport_cartographique.pdf")
   log_msg("G\u00e9n\u00e9ration du rapport cartographique PDF...")
@@ -771,7 +773,43 @@ generate_prediction_report_pdf <- function(rasters, statistics, output_dir,
   })
 
   # ================================================================
-  # PAGE 5 : Richesse sp\u00e9cifique (nombre d'essences par pixel)
+  # PAGE 5 : Masque forestier (OSO + NDVI)
+  # ================================================================
+  if (!is.null(forest_mask)) {
+    tryCatch({
+      par(mar = c(3.5, 2, 3.5, 8))
+      mask_cols <- c("#f7f7f7", "#1a9850")
+      terra::plot(forest_mask, type = "classes",
+                  col = mask_cols,
+                  main = "Masque forestier (OSO + NDVI)",
+                  legend = FALSE, axes = TRUE)
+      if (!is.null(aoi_proj)) {
+        plot(sf::st_geometry(aoi_proj), add = TRUE,
+             border = "black", lwd = 2, lty = 2)
+      }
+      par(xpd = TRUE)
+      legend("right", inset = c(-0.08, 0),
+             legend = c("Non-for\u00eat", "For\u00eat"),
+             fill = mask_cols,
+             cex = 0.8, bty = "n", title = "Masque", title.font = 2)
+      par(xpd = FALSE)
+      n_forest <- sum(terra::values(forest_mask) == 1L, na.rm = TRUE)
+      n_total  <- sum(!is.na(terra::values(forest_mask)))
+      pct_forest <- round(n_forest / n_total * 100, 1)
+      res_m <- terra::res(forest_mask)[1]
+      ha_forest <- round(n_forest * res_m^2 / 10000, 1)
+      mtext(paste0("For\u00eat : ", n_forest, " pixels (",
+                    pct_forest, "%, ", ha_forest, " ha) | ",
+                    "Combinaison : ", FOREST_MASK_PARAMS$combine_method),
+            side = 1, line = 2.2, cex = 0.7, font = 3)
+    }, error = function(e) {
+      plot.new()
+      text(0.5, 0.5, paste("Erreur carte masque :", e$message), cex = 0.8)
+    })
+  }
+
+  # ================================================================
+  # PAGE 6 : Richesse sp\u00e9cifique (nombre d'essences par pixel)
   # ================================================================
   if (!is.null(rasters$presence)) {
     tryCatch({
@@ -802,7 +840,7 @@ generate_prediction_report_pdf <- function(rasters, statistics, output_dir,
   }
 
   # ================================================================
-  # PAGE 6 : Composition foresti\u00e8re (ggplot2)
+  # PAGE 7 : Composition foresti\u00e8re (ggplot2)
   # ================================================================
   tryCatch({
     detected <- statistics[statistics$n_pixels > 0, ]
@@ -839,7 +877,7 @@ generate_prediction_report_pdf <- function(rasters, statistics, output_dir,
   })
 
   # ================================================================
-  # PAGE 7 : Confiance moyenne par essence (ggplot2)
+  # PAGE 8 : Confiance moyenne par essence (ggplot2)
   # ================================================================
   tryCatch({
     detected <- statistics[statistics$n_pixels > 0, ]
@@ -886,5 +924,474 @@ generate_prediction_report_pdf <- function(rasters, statistics, output_dir,
 
   log_msg("Rapport PDF : {pdf_path}", level = "success")
   invisible(pdf_path)
+}
+
+# --- Helpers internes pour les cartes ggplot2 ---------------------------------
+
+#' Convertir un SpatRaster mono-bande en data.frame pour geom_raster
+#' @param r SpatRaster mono-bande
+#' @param max_cells Sous-\u00e9chantillonnage si le raster d\u00e9passe ce seuil
+#' @return data.frame avec colonnes x, y, value
+#' @keywords internal
+.rast_to_df <- function(r, max_cells = 500000) {
+  if (terra::ncell(r) > max_cells) {
+    fact <- ceiling(sqrt(terra::ncell(r) / max_cells))
+    r <- terra::aggregate(r, fact = fact, fun = "modal", na.rm = TRUE)
+  }
+  df <- terra::as.data.frame(r, xy = TRUE, na.rm = TRUE)
+  names(df)[3] <- "value"
+  df
+}
+
+#' Convertir un SpatRaster RGB (3 bandes) en data.frame pour geom_raster
+#' @param rgb SpatRaster 3 bandes (R, G, B)
+#' @param max_cells Sous-\u00e9chantillonnage si le raster d\u00e9passe ce seuil
+#' @return data.frame avec colonnes x, y, hex (couleur hexad\u00e9cimale)
+#' @keywords internal
+.rgb_to_df <- function(rgb, max_cells = 500000) {
+  if (terra::ncell(rgb) > max_cells) {
+    fact <- ceiling(sqrt(terra::ncell(rgb) / max_cells))
+    rgb <- terra::aggregate(rgb, fact = fact, fun = "mean", na.rm = TRUE)
+  }
+  df <- terra::as.data.frame(rgb, xy = TRUE, na.rm = TRUE)
+  # Stretch lin\u00e9aire 2-98%
+  stretch_band <- function(v) {
+    q <- quantile(v, c(0.02, 0.98), na.rm = TRUE)
+    v <- (v - q[1]) / (q[2] - q[1])
+    pmin(pmax(v, 0), 1)
+  }
+  r_s <- stretch_band(df[[3]])
+  g_s <- stretch_band(df[[4]])
+  b_s <- stretch_band(df[[5]])
+  df$hex <- grDevices::rgb(r_s, g_s, b_s)
+  df[, c("x", "y", "hex")]
+}
+
+#' Th\u00e8me minimaliste pour les cartes ggplot2
+#' @keywords internal
+.theme_map <- function(base_size = 9) {
+  theme_minimal(base_size = base_size) +
+    theme(
+      axis.title   = element_blank(),
+      axis.text    = element_text(size = 6),
+      plot.title   = element_text(face = "bold", size = base_size + 2),
+      plot.subtitle = element_text(size = base_size - 1, color = "grey40"),
+      legend.key.height = unit(0.8, "cm"),
+      legend.key.width  = unit(0.3, "cm"),
+      legend.title = element_text(size = base_size - 1, face = "bold"),
+      legend.text  = element_text(size = base_size - 2),
+      panel.grid   = element_line(color = "grey92", linewidth = 0.2)
+    )
+}
+
+# --- Rapport cartographique RStudio (ggplot2 + patchwork) ---------------------
+
+#' G\u00e9n\u00e9ration d'un rapport cartographique ggplot2/patchwork
+#'
+#' Produit un objet patchwork affichable dans le viewer RStudio et
+#' sauvegard\u00e9 en PDF. Toutes les cartes utilisent geom_raster (pas de
+#' d\u00e9pendance \u00e0 terra::plot) : compatible RStudio, Quarto, Shiny.
+#'
+#' @inheritParams generate_prediction_report_pdf
+#' @return Liste avec \code{dashboard} (objet patchwork) et \code{pdf_path}
+#'   (chemin PDF, invisible)
+#' @export
+generate_prediction_report_rstudio <- function(rasters, statistics, output_dir,
+                                                s2_rgb = NULL, aoi = NULL,
+                                                forest_mask = NULL) {
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+  pdf_path <- file.path(output_dir, "rapport_cartographique_rstudio.pdf")
+  log_msg("G\u00e9n\u00e9ration du rapport cartographique RStudio (ggplot2 + patchwork)...")
+
+  # --- M\u00e9tadonn\u00e9es ---
+  legend_df <- rasters$legend
+  class_names <- legend_df$species
+  n_classes <- length(class_names)
+  species_colors <- .match_species_colors(class_names)
+  cleared_names <- intersect(class_names, c("Coupe/Vide", "Cleared"))
+  cleared_idx   <- which(class_names %in% cleared_names)
+
+  # AOI en sf pour coord_sf
+  aoi_geom <- NULL
+  if (!is.null(aoi)) {
+    aoi_geom <- sf::st_geometry(
+      sf::st_transform(aoi, terra::crs(rasters$species))
+    )
+  }
+
+  plots <- list()
+
+  # ============================================================
+  # 1. Carte des essences (fond satellite optionnel)
+  # ============================================================
+  tryCatch({
+    # Raster essences sans Coupe/Vide
+    r_sp <- rasters$species
+    if (length(cleared_idx) > 0) {
+      rcl_na <- cbind(cleared_idx, rep(NA_real_, length(cleared_idx)))
+      r_sp <- terra::classify(r_sp, rcl_na)
+    }
+    if (!is.null(terra::levels(r_sp)[[1]])) levels(r_sp) <- NULL
+    df_sp <- .rast_to_df(r_sp)
+    df_sp$espece <- class_names[df_sp$value]
+
+    active_colors <- species_colors[!names(species_colors) %in% cleared_names]
+
+    p1 <- ggplot()
+    # Fond satellite via annotation_raster (pas de d\u00e9pendance ggnewscale)
+    if (!is.null(s2_rgb)) {
+      df_rgb <- .rgb_to_df(s2_rgb)
+      ext_rgb <- terra::ext(s2_rgb)
+      # Construire une matrice de couleurs pour annotation_raster
+      rgb_agg <- s2_rgb
+      if (terra::ncell(rgb_agg) > 500000) {
+        fact <- ceiling(sqrt(terra::ncell(rgb_agg) / 500000))
+        rgb_agg <- terra::aggregate(rgb_agg, fact = fact, fun = "mean",
+                                     na.rm = TRUE)
+      }
+      rgb_mat <- terra::as.matrix(rgb_agg, wide = TRUE)
+      stretch_v <- function(v) {
+        q <- quantile(v, c(0.02, 0.98), na.rm = TRUE)
+        pmin(pmax((v - q[1]) / (q[2] - q[1]), 0), 1)
+      }
+      nr <- terra::nrow(rgb_agg)
+      nc <- terra::ncol(rgb_agg)
+      r_v <- stretch_v(rgb_mat[, seq_len(nc)])
+      g_v <- stretch_v(rgb_mat[, nc + seq_len(nc)])
+      b_v <- stretch_v(rgb_mat[, 2 * nc + seq_len(nc)])
+      hex_mat <- matrix(grDevices::rgb(r_v, g_v, b_v), nrow = nr, ncol = nc)
+      # annotation_raster attend une matrice [nrow, ncol] orient\u00e9e top-to-bottom
+      p1 <- p1 +
+        annotation_raster(
+          hex_mat,
+          xmin = ext_rgb[1], xmax = ext_rgb[2],
+          ymin = ext_rgb[3], ymax = ext_rgb[4]
+        )
+    }
+    p1 <- p1 +
+      geom_raster(data = df_sp,
+                   aes(x = x, y = y, fill = espece),
+                   alpha = if (!is.null(s2_rgb)) 0.7 else 1)
+    if (!is.null(aoi_geom)) {
+      p1 <- p1 + geom_sf(data = aoi_geom, fill = NA,
+                           color = "white", linewidth = 0.6, linetype = 2,
+                           inherit.aes = FALSE)
+    }
+    p1 <- p1 +
+      scale_fill_manual(values = active_colors, name = "Essence",
+                         na.translate = FALSE) +
+      coord_sf(expand = FALSE) +
+      labs(title = "Carte des essences foresti\u00e8res",
+           subtitle = "Coupes/Vides = transparents") +
+      .theme_map() +
+      guides(fill = guide_legend(ncol = 1, override.aes = list(alpha = 1)))
+    plots$species <- p1
+  }, error = function(e) {
+    plots$species <<- ggplot() +
+      annotate("text", x = 0.5, y = 0.5,
+               label = paste("Erreur carte essences :", e$message)) +
+      theme_void()
+  })
+
+  # ============================================================
+  # 2. Shannon
+  # ============================================================
+  if (!is.null(rasters$shannon)) {
+    tryCatch({
+      df_sh <- .rast_to_df(rasters$shannon)
+      p2 <- ggplot(df_sh, aes(x = x, y = y, fill = value)) +
+        geom_raster()
+      if (!is.null(aoi_geom)) {
+        p2 <- p2 + geom_sf(data = aoi_geom, fill = NA,
+                             color = "white", linewidth = 0.6, linetype = 2,
+                             inherit.aes = FALSE)
+      }
+      p2 <- p2 +
+        scale_fill_viridis_c(option = "viridis", name = "Shannon",
+                              limits = c(0, 1)) +
+        coord_sf(expand = FALSE) +
+        labs(title = "Entropie de Shannon",
+             subtitle = "0 = pur | 1 = m\u00e9lange maximal") +
+        .theme_map()
+      plots$shannon <- p2
+    }, error = function(e) {
+      plots$shannon <<- ggplot() +
+        annotate("text", x = 0.5, y = 0.5,
+                 label = paste("Erreur Shannon :", e$message)) +
+        theme_void()
+    })
+  }
+
+  # ============================================================
+  # 3. Confiance
+  # ============================================================
+  tryCatch({
+    df_cf <- .rast_to_df(rasters$confidence)
+    p3 <- ggplot(df_cf, aes(x = x, y = y, fill = value)) +
+      geom_raster()
+    if (!is.null(aoi_geom)) {
+      p3 <- p3 + geom_sf(data = aoi_geom, fill = NA,
+                           color = "black", linewidth = 0.6, linetype = 2,
+                           inherit.aes = FALSE)
+    }
+    p3 <- p3 +
+      scale_fill_gradientn(
+        colors = c("#d73027", "#fc8d59", "#fee08b",
+                   "#d9ef8b", "#91cf60", "#1a9850"),
+        limits = c(0, 1), name = "Probabilit\u00e9"
+      ) +
+      coord_sf(expand = FALSE) +
+      labs(title = "Carte de confiance",
+           subtitle = "Rouge = faible | Vert = forte") +
+      .theme_map()
+    plots$confidence <- p3
+  }, error = function(e) {
+    plots$confidence <<- ggplot() +
+      annotate("text", x = 0.5, y = 0.5,
+               label = paste("Erreur confiance :", e$message)) +
+      theme_void()
+  })
+
+  # ============================================================
+  # 4. Feuillus / R\u00e9sineux
+  # ============================================================
+  tryCatch({
+    type_info <- data.frame(species = class_names,
+                             code = seq_along(class_names),
+                             stringsAsFactors = FALSE)
+    type_source <- if (all(class_names %in% SPECIES_GROUPS_INFO$group)) {
+      SPECIES_GROUPS_INFO[, c("group", "type")]
+    } else {
+      data.frame(group = SPECIES$french, type = SPECIES$type,
+                 stringsAsFactors = FALSE)
+    }
+    type_info <- merge(type_info, type_source,
+                        by.x = "species", by.y = "group", all.x = TRUE)
+    type_info$type_code <- ifelse(type_info$type == "feuillu", 1L,
+                            ifelse(type_info$type == "r\u00e9sineux", 2L,
+                                   NA_integer_))
+    rcl_type <- as.matrix(type_info[order(type_info$code),
+                                     c("code", "type_code")])
+    r_type <- rasters$species
+    if (!is.null(terra::levels(r_type)[[1]])) levels(r_type) <- NULL
+    r_type <- terra::classify(r_type, rcl_type)
+
+    df_type <- .rast_to_df(r_type)
+    df_type$type_label <- c("Feuillus", "R\u00e9sineux")[df_type$value]
+
+    p4 <- ggplot(df_type, aes(x = x, y = y, fill = type_label)) +
+      geom_raster()
+    if (!is.null(aoi_geom)) {
+      p4 <- p4 + geom_sf(data = aoi_geom, fill = NA,
+                           color = "black", linewidth = 0.6, linetype = 2,
+                           inherit.aes = FALSE)
+    }
+    p4 <- p4 +
+      scale_fill_manual(values = c("Feuillus" = "#66c2a5",
+                                    "R\u00e9sineux" = "#1b7837"),
+                         name = "Type") +
+      coord_sf(expand = FALSE) +
+      labs(title = "Types forestiers",
+           subtitle = "Feuillus / R\u00e9sineux") +
+      .theme_map()
+    plots$type <- p4
+  }, error = function(e) {
+    plots$type <<- ggplot() +
+      annotate("text", x = 0.5, y = 0.5,
+               label = paste("Erreur types :", e$message)) +
+      theme_void()
+  })
+
+  # ============================================================
+  # 5. Masque forestier
+  # ============================================================
+  if (!is.null(forest_mask)) {
+    tryCatch({
+      df_mask <- .rast_to_df(forest_mask)
+      df_mask$label <- ifelse(df_mask$value == 1, "For\u00eat", "Non-for\u00eat")
+
+      p5 <- ggplot(df_mask, aes(x = x, y = y, fill = label)) +
+        geom_raster()
+      if (!is.null(aoi_geom)) {
+        p5 <- p5 + geom_sf(data = aoi_geom, fill = NA,
+                             color = "black", linewidth = 0.6, linetype = 2,
+                             inherit.aes = FALSE)
+      }
+      n_forest <- sum(df_mask$value == 1)
+      n_total  <- nrow(df_mask)
+      pct_f <- round(n_forest / n_total * 100, 1)
+
+      p5 <- p5 +
+        scale_fill_manual(values = c("Non-for\u00eat" = "#f7f7f7",
+                                      "For\u00eat" = "#1a9850"),
+                           name = "Masque") +
+        coord_sf(expand = FALSE) +
+        labs(title = "Masque forestier (OSO + NDVI)",
+             subtitle = paste0("For\u00eat : ", pct_f, "% de la zone")) +
+        .theme_map()
+      plots$mask <- p5
+    }, error = function(e) {
+      plots$mask <<- ggplot() +
+        annotate("text", x = 0.5, y = 0.5,
+                 label = paste("Erreur masque :", e$message)) +
+        theme_void()
+    })
+  }
+
+  # ============================================================
+  # 6. Richesse sp\u00e9cifique
+  # ============================================================
+  if (!is.null(rasters$presence)) {
+    tryCatch({
+      r_rich <- terra::app(rasters$presence, sum, na.rm = TRUE)
+      df_rich <- .rast_to_df(r_rich)
+      p6 <- ggplot(df_rich, aes(x = x, y = y, fill = value)) +
+        geom_raster()
+      if (!is.null(aoi_geom)) {
+        p6 <- p6 + geom_sf(data = aoi_geom, fill = NA,
+                             color = "white", linewidth = 0.6, linetype = 2,
+                             inherit.aes = FALSE)
+      }
+      p6 <- p6 +
+        scale_fill_viridis_c(option = "magma", name = "Nb essences") +
+        coord_sf(expand = FALSE) +
+        labs(title = "Richesse sp\u00e9cifique",
+             subtitle = "Nombre d'essences d\u00e9tect\u00e9es par pixel") +
+        .theme_map()
+      plots$richness <- p6
+    }, error = function(e) {
+      plots$richness <<- ggplot() +
+        annotate("text", x = 0.5, y = 0.5,
+                 label = paste("Erreur richesse :", e$message)) +
+        theme_void()
+    })
+  }
+
+  # ============================================================
+  # 7. Composition foresti\u00e8re (barplot)
+  # ============================================================
+  tryCatch({
+    detected <- statistics[statistics$n_pixels > 0, ]
+    detected_sp <- detected[!detected$espece %in% c("Coupe/Vide", "Cleared"), ]
+    if (nrow(detected_sp) > 0) {
+      p7 <- ggplot(detected_sp,
+                     aes(x = reorder(espece, surface_ha),
+                         y = surface_ha, fill = espece)) +
+        geom_col(alpha = 0.85, show.legend = FALSE) +
+        geom_text(aes(label = paste0(pct, "%")),
+                  hjust = -0.1, size = 2.5) +
+        coord_flip(clip = "off") +
+        scale_fill_manual(values = species_colors) +
+        scale_y_continuous(expand = expansion(mult = c(0, 0.3))) +
+        labs(title = "Composition foresti\u00e8re",
+             subtitle = paste0(sum(detected_sp$surface_ha), " ha"),
+             x = NULL, y = "Surface (ha)") +
+        theme_minimal(base_size = 9) +
+        theme(
+          plot.title = element_text(face = "bold", size = 11),
+          plot.subtitle = element_text(size = 8, color = "grey40"),
+          axis.text.y = element_text(face = "italic", size = 7),
+          panel.grid.major.y = element_blank()
+        )
+      plots$composition <- p7
+    }
+  }, error = function(e) {
+    plots$composition <<- ggplot() +
+      annotate("text", x = 0.5, y = 0.5,
+               label = paste("Erreur composition :", e$message)) +
+      theme_void()
+  })
+
+  # ============================================================
+  # 8. Confiance par esp\u00e8ce (barplot)
+  # ============================================================
+  tryCatch({
+    detected <- statistics[statistics$n_pixels > 0, ]
+    detected_sp <- detected[!detected$espece %in% c("Coupe/Vide", "Cleared"), ]
+    if (nrow(detected_sp) > 0 && "confiance_moy" %in% names(detected_sp)) {
+      p8 <- ggplot(detected_sp,
+                     aes(x = reorder(espece, confiance_moy),
+                         y = confiance_moy, fill = espece)) +
+        geom_col(alpha = 0.85, show.legend = FALSE) +
+        geom_text(aes(label = paste0(confiance_moy, "%")),
+                  hjust = -0.1, size = 2.5) +
+        geom_hline(yintercept = 70, linetype = "dashed",
+                   color = "grey50", alpha = 0.7) +
+        coord_flip(clip = "off") +
+        scale_fill_manual(values = species_colors) +
+        scale_y_continuous(limits = c(0, 105),
+                           expand = expansion(mult = c(0, 0.05))) +
+        labs(title = "Confiance par essence",
+             subtitle = "Probabilit\u00e9 moyenne (%)",
+             x = NULL, y = "Confiance (%)") +
+        theme_minimal(base_size = 9) +
+        theme(
+          plot.title = element_text(face = "bold", size = 11),
+          plot.subtitle = element_text(size = 8, color = "grey40"),
+          axis.text.y = element_text(face = "italic", size = 7),
+          panel.grid.major.y = element_blank()
+        )
+      plots$conf_species <- p8
+    }
+  }, error = function(e) {
+    plots$conf_species <<- ggplot() +
+      annotate("text", x = 0.5, y = 0.5,
+               label = paste("Erreur confiance :", e$message)) +
+      theme_void()
+  })
+
+  # ============================================================
+  # Assemblage patchwork
+  # ============================================================
+  # Ligne 1 : essences + shannon + confiance
+  # Ligne 2 : types + masque + richesse
+  # Ligne 3 : composition + confiance/esp\u00e8ce
+  available <- names(plots)
+
+  # Construire les lignes adaptativement
+  row1 <- list()
+  if ("species" %in% available) row1 <- c(row1, list(plots$species))
+  if ("shannon" %in% available) row1 <- c(row1, list(plots$shannon))
+  if ("confidence" %in% available) row1 <- c(row1, list(plots$confidence))
+
+  row2 <- list()
+  if ("type" %in% available) row2 <- c(row2, list(plots$type))
+  if ("mask" %in% available) row2 <- c(row2, list(plots$mask))
+  if ("richness" %in% available) row2 <- c(row2, list(plots$richness))
+
+  row3 <- list()
+  if ("composition" %in% available) row3 <- c(row3, list(plots$composition))
+  if ("conf_species" %in% available) row3 <- c(row3, list(plots$conf_species))
+
+  # Assembler chaque ligne avec patchwork::wrap_plots
+  build_row <- function(plot_list) {
+    if (length(plot_list) == 0) return(NULL)
+    patchwork::wrap_plots(plot_list, nrow = 1)
+  }
+
+  rows <- Filter(Negate(is.null), list(
+    build_row(row1), build_row(row2), build_row(row3)
+  ))
+
+  dashboard <- patchwork::wrap_plots(rows, ncol = 1) +
+    patchwork::plot_annotation(
+      title = "TreeSatAI Nemeton \u2014 Rapport cartographique",
+      subtitle = glue::glue(
+        "{n_classes} classes | {sum(statistics$surface_ha)} ha | ",
+        "Sentinel-2 s\u00e9ries temporelles"
+      ),
+      theme = theme(
+        plot.title = element_text(size = 16, face = "bold"),
+        plot.subtitle = element_text(size = 11, color = "grey40")
+      )
+    )
+
+  # Sauvegarder en PDF
+  ggsave(pdf_path, dashboard,
+         width = 42, height = 55, units = "cm",
+         dpi = VIS_PARAMS$dpi, limitsize = FALSE)
+  log_msg("Rapport RStudio PDF : {pdf_path}", level = "success")
+
+  invisible(list(dashboard = dashboard, pdf_path = pdf_path, plots = plots))
 }
 

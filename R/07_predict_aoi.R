@@ -1702,11 +1702,12 @@ predict_species_map <- function(aoi_path,
   )
   pdf_report <- tryCatch(
     generate_prediction_report_pdf(
-      rasters    = rasters,
-      statistics = stats,
-      output_dir = output_dir,
-      s2_rgb     = s2_rgb,
-      aoi        = aoi
+      rasters     = rasters,
+      statistics  = stats,
+      output_dir  = output_dir,
+      s2_rgb      = s2_rgb,
+      aoi         = aoi,
+      forest_mask = forest_mask_raster
     ),
     error = function(e) {
       log_msg("  Erreur g\u00e9n\u00e9ration rapport PDF : {e$message}", level = "warning")
@@ -1715,6 +1716,25 @@ predict_species_map <- function(aoi_path,
   )
   if (!is.null(pdf_report)) {
     output_files$pdf_report <- pdf_report
+  }
+
+  # 7j. Rapport cartographique RStudio (ggplot2 + patchwork)
+  rstudio_report <- tryCatch(
+    generate_prediction_report_rstudio(
+      rasters     = rasters,
+      statistics  = stats,
+      output_dir  = output_dir,
+      s2_rgb      = s2_rgb,
+      aoi         = aoi,
+      forest_mask = forest_mask_raster
+    ),
+    error = function(e) {
+      log_msg("  Erreur rapport RStudio : {e$message}", level = "warning")
+      NULL
+    }
+  )
+  if (!is.null(rstudio_report)) {
+    output_files$pdf_rstudio <- rstudio_report$pdf_path
   }
 
   # --- 8. Résumé ---
@@ -1742,7 +1762,9 @@ predict_species_map <- function(aoi_path,
   if (!is.null(forest_mask_raster))
     cli::cli_li("{file.path(output_dir, 'masque_foret.tif')} — masque forestier (OSO+NDVI)")
   if (!is.null(output_files$pdf_report))
-    cli::cli_li("{output_files$pdf_report} — rapport cartographique (PDF 7 pages)")
+    cli::cli_li("{output_files$pdf_report} — rapport cartographique (PDF 8 pages)")
+  if (!is.null(output_files$pdf_rstudio))
+    cli::cli_li("{output_files$pdf_rstudio} — rapport RStudio (ggplot2+patchwork)")
   cli::cli_end()
 
   if (!is.null(output_files$shannon)) {
@@ -1766,7 +1788,8 @@ predict_species_map <- function(aoi_path,
     statistics        = stats,
     model             = model,
     legend            = rasters$legend,
-    pdf_report        = pdf_report
+    pdf_report        = pdf_report,
+    rstudio_report    = rstudio_report
   ))
 }
 
