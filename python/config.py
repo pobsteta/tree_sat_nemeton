@@ -86,8 +86,8 @@ FOREST_MASK_CONFIG = {
     "use_oso": True,
     "oso_year": 2021,
     # Classes OSO forestières (nomenclature 23 classes, CESBIO/CNES depuis 2018)
-    # 17 = Feuillus, 18 = Conifères
-    "oso_forest_classes": [17, 18],
+    # 16 = Forêts de feuillus, 17 = Forêts de conifères
+    "oso_forest_classes": [16, 17],
     "oso_resample_method": "nearest",
 
     # NDVI max annuel

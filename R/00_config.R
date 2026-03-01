@@ -291,9 +291,23 @@ FOREST_MASK_PARAMS <- list(
 
   # Classes OSO considérées comme forestières
   # Nomenclature OSO 23 classes (produit CESBIO/CNES depuis 2018) :
-  #   17 = Feuillus (forêts de feuillus)
-  #   18 = Conifères (forêts de conifères)
-  oso_forest_classes = c(17L, 18L),
+  #   Valeur pixel | Classe
+  #   -------------|---------------------------
+  #   1-4          | Urbain, routes
+  #   5-12         | Cultures (colza, céréales, maïs, riz...)
+  #   13           | Prairies
+  #   14           | Vergers
+  #   15           | Vignes
+  #   16           | Forêts de feuillus  ← FORÊT
+  #   17           | Forêts de conifères ← FORÊT
+  #   18           | Pelouses naturelles
+  #   19           | Landes ligneuses
+  #   20           | Surfaces minérales / roche nue
+  #   21           | Eau
+  #   22           | Glaciers / neiges éternelles
+  #   23           | Plages et dunes
+  # Source : https://collections.sentinel-hub.com/cnes-land-cover-map/
+  oso_forest_classes = c(16L, 17L),
 
   # Méthode de rééchantillonnage (catégoriel → nearest neighbor)
   oso_resample_method = "near",
