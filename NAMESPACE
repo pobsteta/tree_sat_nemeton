@@ -10,6 +10,7 @@ export(train_treesatai)
 
 # --- Data acquisition ---
 export(remap_species_groups)
+export(build_multiyear_features)
 export(download_treesatai_ts)
 export(load_ifn_plots)
 export(extract_s2_timeseries)
@@ -20,6 +21,7 @@ export(search_sentinel1)
 
 # --- Classification ---
 export(compute_class_weights)
+export(select_features_boruta)
 export(split_train_test)
 export(select_features)
 export(train_random_forest)

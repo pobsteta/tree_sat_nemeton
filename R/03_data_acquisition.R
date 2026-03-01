@@ -788,3 +788,117 @@ build_feature_matrix <- function(ts_long) {
   df
 }
 
+# ==============================================================================
+# CONSTRUCTION MULTI-ANNÉE
+# ==============================================================================
+
+#' Construire une matrice de features agrégée sur plusieurs années
+#'
+#' Pour chaque parcelle, génère les features année par année, puis agrège :
+#'   - Séries temporelles (B02_d001, NDVI_d001, …) : profil moyen inter-annuel
+#'   - Statistiques (NDVI_mean, B02_sd, …) : moyenne inter-annuelle
+#'   - Phénométriques (pheno_SOS, pheno_EOS, …) : moyenne ET écart-type
+#'     (le sd capture la variabilité inter-annuelle, informative en soi)
+#'   - Fourier : moyenne inter-annuelle
+#'
+#' @param years Vecteur d'années (ex: c(2019, 2020, 2021))
+#' @param n_samples_per_species Échantillons par espèce (mode synthétique)
+#' @param data_paths Vecteur de chemins vers des données réelles par année
+#'   (même longueur que years, ou NULL pour mode synthétique)
+#' @return data.frame avec features agrégées (1 ligne par parcelle)
+#' @export
+build_multiyear_features <- function(years = c(2019, 2020, 2021),
+                                      n_samples_per_species = 50,
+                                      data_paths = NULL) {
+  n_years <- length(years)
+  log_msg("Construction multi-ann\u00e9e : {n_years} ann\u00e9es ({paste(years, collapse=', ')})")
+
+  # --- Étape 1 : construire la matrice de features pour chaque année ---
+  year_matrices <- list()
+
+  for (i in seq_along(years)) {
+    yr <- years[i]
+    log_msg("  Ann\u00e9e {yr} ({i}/{n_years})...", level = "info")
+
+    if (is.null(data_paths)) {
+      ts_long <- generate_synthetic_dataset(
+        n_samples_per_species = n_samples_per_species,
+        year = yr
+      )
+    } else {
+      ts_long <- readr::read_csv(data_paths[i], show_col_types = FALSE)
+    }
+
+    # Appliquer le regroupement en 10 classes
+    ts_long <- remap_species_groups(ts_long)
+
+    fm <- build_feature_matrix(ts_long)
+    year_matrices[[as.character(yr)]] <- fm
+  }
+
+  # --- Étape 2 : identifier les colonnes par famille ---
+  ref_fm <- year_matrices[[1]]
+  all_cols <- names(ref_fm)
+  meta_cols  <- c("plot_id", "species_code", "species_name")
+  feat_cols  <- setdiff(all_cols, meta_cols)
+
+  # Colonnes phénologiques (on garde mean + sd)
+  pheno_cols <- grep("^pheno_", feat_cols, value = TRUE)
+  # Toutes les autres features numériques (mean inter-annuel seulement)
+  other_cols <- setdiff(feat_cols, pheno_cols)
+
+  log_msg("  {length(pheno_cols)} ph\u00e9nom\u00e9triques + {length(other_cols)} autres features")
+
+  # --- Étape 3 : agréger ---
+  n_plots <- nrow(ref_fm)
+  plot_ids <- ref_fm$plot_id
+
+  # Empiler les features numériques par année (array 3D : plots × features × years)
+  log_msg("  Agr\u00e9gation inter-annuelle...", level = "info")
+
+  # Extraire les matrices numériques par année
+  year_mats <- lapply(year_matrices, function(fm) {
+    mat <- as.matrix(fm[, feat_cols])
+    storage.mode(mat) <- "double"
+    mat
+  })
+
+  # Empiler en array 3D
+  arr <- array(
+    unlist(year_mats),
+    dim = c(n_plots, length(feat_cols), n_years),
+    dimnames = list(NULL, feat_cols, names(year_matrices))
+  )
+
+  # Moyenne inter-annuelle pour toutes les features
+  mean_mat <- apply(arr, c(1, 2), mean, na.rm = TRUE)
+
+  # Construire le data.frame de sortie
+  result <- data.frame(
+    plot_id      = ref_fm$plot_id,
+    species_code = ref_fm$species_code,
+    species_name = ref_fm$species_name,
+    stringsAsFactors = FALSE
+  )
+
+  # Ajouter les features moyennées
+  result <- cbind(result, as.data.frame(mean_mat))
+
+  # Ajouter l'écart-type inter-annuel des phénométriques
+  if (length(pheno_cols) > 0 && n_years > 1) {
+    sd_mat <- apply(arr[, pheno_cols, , drop = FALSE], c(1, 2), sd, na.rm = TRUE)
+    sd_df <- as.data.frame(sd_mat)
+    names(sd_df) <- paste0(pheno_cols, "_sd_interannual")
+    result <- cbind(result, sd_df)
+
+    log_msg("  +{ncol(sd_df)} features de variabilit\u00e9 inter-annuelle (sd ph\u00e9nom\u00e9triques)")
+  }
+
+  log_msg("Matrice multi-ann\u00e9e : {nrow(result)} parcelles \u00d7 {ncol(result)} colonnes",
+          level = "success")
+  log_msg("  Ann\u00e9es : {paste(years, collapse=', ')}", level = "info")
+  log_msg("  Profils moyenn\u00e9s sur {n_years} ans + {length(pheno_cols)} sd inter-annuels")
+
+  result
+}
+

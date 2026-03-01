@@ -107,6 +107,100 @@ select_features <- function(feature_matrix) {
   feature_cols
 }
 
+#' Sélection de features par Boruta (wrapper Random Forest)
+#'
+#' Boruta crée des « shadow features » (copies aléatoirement permutées)
+#' et teste si les features réelles surpassent les shadows. Résultat :
+#' Confirmed / Rejected / Tentative.
+#'
+#' @param feature_matrix data.frame avec colonnes features + species_name
+#' @param feature_cols Vecteur des noms de features candidates
+#' @param target_col Colonne cible
+#' @param max_runs Nombre max d'itérations Boruta (défaut : 100)
+#' @param p_value Seuil de significativité (défaut : 0.01)
+#' @return Liste avec selected_cols, boruta_result, importance_df
+#' @export
+select_features_boruta <- function(feature_matrix,
+                                    feature_cols,
+                                    target_col = "species_name",
+                                    max_runs   = 100,
+                                    p_value    = 0.01) {
+  if (!requireNamespace("Boruta", quietly = TRUE)) {
+    cli::cli_alert_warning("{.pkg Boruta} non install\u00e9 \u2014 s\u00e9lection Boruta ignor\u00e9e")
+    cli::cli_text("Installer avec : {.code install.packages('Boruta')}")
+    return(list(selected_cols = feature_cols, boruta_result = NULL, importance_df = NULL))
+  }
+
+  log_msg("S\u00e9lection de features par Boruta ({length(feature_cols)} candidates)...")
+  log_msg("  maxRuns={max_runs}, pValue={p_value}", level = "info")
+
+  # Préparer les données
+  X <- feature_matrix[, feature_cols, drop = FALSE]
+  y <- as.factor(feature_matrix[[target_col]])
+
+  # Remplacement NA par médiane
+  for (col in feature_cols) {
+    na_mask <- is.na(X[[col]])
+    if (any(na_mask)) {
+      X[[col]][na_mask] <- median(X[[col]], na.rm = TRUE)
+    }
+  }
+
+  # Retirer colonnes à variance nulle (Boruta échoue sinon)
+  var_check <- sapply(X, var, na.rm = TRUE)
+  zero_var <- names(var_check[var_check == 0 | is.na(var_check)])
+  if (length(zero_var) > 0) {
+    X <- X[, !names(X) %in% zero_var, drop = FALSE]
+    log_msg("  {length(zero_var)} features \u00e0 variance nulle retir\u00e9es", level = "warning")
+  }
+
+  # Exécuter Boruta avec ranger comme backend (rapide)
+  boruta_result <- Boruta::Boruta(
+    x        = X,
+    y        = y,
+    pValue   = p_value,
+    maxRuns  = max_runs,
+    doTrace  = 0,
+    num.trees = 200,
+    num.threads = max(1, parallel::detectCores() - 1)
+  )
+
+  # Résoudre les features tentatives (conservateur : les garder)
+  boruta_final <- Boruta::TentativeRoughFix(boruta_result)
+
+  # Extraire les features confirmées + tentatives résolues
+  decision <- boruta_final$finalDecision
+  confirmed <- names(decision[decision == "Confirmed"])
+  rejected  <- names(decision[decision == "Rejected"])
+  tentative <- names(decision[decision == "Tentative"])
+
+  log_msg("Boruta termin\u00e9 :", level = "success")
+  log_msg("  Confirm\u00e9es  : {length(confirmed)}", level = "info")
+  log_msg("  Rejet\u00e9es   : {length(rejected)}", level = "info")
+  if (length(tentative) > 0) {
+    log_msg("  Tentatives : {length(tentative)} (conserv\u00e9es)", level = "info")
+  }
+
+  selected_cols <- c(confirmed, tentative)
+
+  # Tableau d'importance pour diagnostic
+  imp_df <- data.frame(
+    variable   = names(decision),
+    decision   = as.character(decision),
+    meanImp    = apply(boruta_result$ImpHistory, 2, mean, na.rm = TRUE)[names(decision)],
+    stringsAsFactors = FALSE
+  )
+  imp_df <- imp_df[order(-imp_df$meanImp), ]
+
+  log_msg("  R\u00e9duction : {length(feature_cols)} \u2192 {length(selected_cols)} features ({round(length(selected_cols)/length(feature_cols)*100)}%)")
+
+  list(
+    selected_cols  = selected_cols,
+    boruta_result  = boruta_final,
+    importance_df  = imp_df
+  )
+}
+
 # ==============================================================================
 # 2. RANDOM FOREST
 # ==============================================================================

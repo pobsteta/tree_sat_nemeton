@@ -4,10 +4,11 @@ Version: 0.1.0
 Authors@R:
     person("Pascal", "Obstetar", role = c("aut", "cre"),
            email = "pascal.obstetar@gmail.com")
-Description: Classification of 20 European forest tree species using annual
-    Sentinel-2 time series and phenological signatures. Based on the
-    TreeSatAI-Time-Series dataset (IGNF). Supports Random Forest and
-    deep learning (PyTorch) models, automatic satellite data download from
+Description: Classification of 10 European forest species groups (20 species
+    regrouped) using multi-year Sentinel-1/2 time series and phenological
+    signatures. Based on the TreeSatAI-Time-Series dataset (IGNF). Supports
+    Random Forest and deep learning (PyTorch) models with Boruta feature
+    selection and class weighting, automatic satellite data download from
     Microsoft Planetary Computer, and spatial prediction on any area of
     interest (AOI).
 License: MIT + file LICENSE
@@ -42,6 +43,7 @@ Imports:
     viridis,
     zoo
 Suggests:
+    Boruta,
     caret,
     data.table,
     hdf5r,

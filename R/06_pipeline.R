@@ -4,9 +4,10 @@
 # (20 espèces regroupées) par séries temporelles Sentinel-1/2 annuelles
 #
 # Usage depuis R :
-#   train_treesatai()                              # Données synthétiques
-#   train_treesatai(data_path = "/chemin/dataset") # Données réelles
-#   train_treesatai(n_samples = 100)               # Plus d'échantillons
+#   train_treesatai()                                    # 1 an, synthétique
+#   train_treesatai(years = c(2019, 2020, 2021))         # Multi-année
+#   train_treesatai(data_path = "/chemin/dataset")        # Données réelles
+#   train_treesatai(use_boruta = FALSE)                   # Sans Boruta
 #
 # Usage CLI (via inst/scripts/06_pipeline.R) :
 #   Rscript inst/scripts/06_pipeline.R --synthetic
@@ -18,17 +19,24 @@
 #' @param data_path Chemin vers un répertoire de données réelles (NULL = synthétique)
 #' @param mode Méthode : "rf" (Random Forest), "cnn" (CNN temporel), ou "both"
 #' @param n_samples Nombre d'échantillons par espèce en mode synthétique
-#' @param year Année de simulation (mode synthétique)
+#' @param year Année de simulation (mode synthétique, rétro-compatibilité)
+#' @param years Vecteur d'années pour multi-année (ex: c(2019, 2020, 2021)).
+#'   Si fourni, `year` est ignoré. Les features sont moyennées sur les années.
+#' @param use_boruta Activer la sélection de features par Boruta (TRUE/FALSE)
+#' @param boruta_maxruns Nombre max d'itérations Boruta
 #' @param skip_viz Ne pas générer les visualisations
 #' @param output_dir Répertoire de sortie
 #' @return Liste avec le modèle, l'évaluation et la matrice de features
 #' @export
-train_treesatai <- function(data_path   = NULL,
-                             mode        = "rf",
-                             n_samples   = 50,
-                             year        = 2021,
-                             skip_viz    = FALSE,
-                             output_dir  = NULL) {
+train_treesatai <- function(data_path     = NULL,
+                             mode          = "rf",
+                             n_samples     = 50,
+                             year          = 2021,
+                             years         = NULL,
+                             use_boruta    = TRUE,
+                             boruta_maxruns = 100,
+                             skip_viz      = FALSE,
+                             output_dir    = NULL) {
 
   root <- .get_project_root()
   if (is.null(output_dir)) output_dir <- file.path(root, "output")
@@ -48,15 +56,23 @@ train_treesatai <- function(data_path   = NULL,
   # ===========================================================================
   cli::cli_h2("\u00c9tape 1 \u2014 Acquisition des donn\u00e9es")
 
+  # Résoudre le mode multi-année
+  use_multiyear <- !is.null(years) && length(years) > 1
+  if (is.null(years)) years <- year  # rétro-compatibilité
+
   if (is.null(data_path)) {
     # ---- Mode données synthétiques TreeSatAI ----
     cli::cli_alert_info("Mode synth\u00e9tique : g\u00e9n\u00e9ration de {n_samples} \u00e9chantillons \u00d7 {nrow(SPECIES)} esp\u00e8ces")
+    if (use_multiyear) {
+      cli::cli_alert_info("Multi-ann\u00e9e : {length(years)} ans ({paste(years, collapse=', ')})")
+    }
     cli::cli_text("")
     cli::cli_text("Les profils ph\u00e9nologiques sont bas\u00e9s sur les signatures spectrales")
     cli::cli_text("caract\u00e9ristiques de chaque essence (double logistique + bruit).")
     cli::cli_text("")
 
-    ts_long <- generate_synthetic_dataset(n_samples_per_species = n_samples, year = year)
+    # Générer les séries temporelles de la première (ou seule) année pour la viz
+    ts_long <- generate_synthetic_dataset(n_samples_per_species = n_samples, year = years[1])
     cli::cli_alert_success("Dataset synth\u00e9tique g\u00e9n\u00e9r\u00e9 : {nrow(ts_long)} observations")
     use_treesatai_split <- FALSE
     treesatai <- NULL
@@ -160,7 +176,16 @@ train_treesatai <- function(data_path   = NULL,
   # ===========================================================================
   cli::cli_h2("\u00c9tape 3 \u2014 Construction de la matrice de features")
 
-  feature_matrix <- build_feature_matrix(ts_long)
+  if (use_multiyear && is.null(data_path)) {
+    # Mode multi-année : features moyennées sur N ans
+    cli::cli_alert_info("Construction multi-ann\u00e9e ({length(years)} ans)")
+    feature_matrix <- build_multiyear_features(
+      years                 = years,
+      n_samples_per_species = n_samples
+    )
+  } else {
+    feature_matrix <- build_feature_matrix(ts_long)
+  }
 
   fm_path <- file.path(processed_dir, "feature_matrix.csv")
   readr::write_csv(feature_matrix, fm_path)
@@ -196,7 +221,32 @@ train_treesatai <- function(data_path   = NULL,
   }
 
   feature_cols <- select_features(feature_matrix)
-  cli::cli_text("  {length(feature_cols)} features s\u00e9lectionn\u00e9es")
+  cli::cli_text("  {length(feature_cols)} features s\u00e9lectionn\u00e9es (r\u00e8gles)")
+
+  # ===========================================================================
+  # ÉTAPE 4b : SÉLECTION DE FEATURES PAR BORUTA (optionnel)
+  # ===========================================================================
+  boruta_result <- NULL
+  if (isTRUE(use_boruta)) {
+    cli::cli_h2("\u00c9tape 4b \u2014 S\u00e9lection de features (Boruta)")
+
+    boruta_out <- select_features_boruta(
+      feature_matrix = train_data,
+      feature_cols   = feature_cols,
+      max_runs       = boruta_maxruns
+    )
+
+    boruta_result <- boruta_out$boruta_result
+    feature_cols  <- boruta_out$selected_cols
+
+    cli::cli_text("  {length(feature_cols)} features retenues apr\u00e8s Boruta")
+
+    # Sauvegarder le diagnostic Boruta
+    if (!is.null(boruta_out$importance_df)) {
+      readr::write_csv(boruta_out$importance_df,
+                       file.path(output_dir, "boruta_importance.csv"))
+    }
+  }
 
   # ===========================================================================
   # ÉTAPE 5 : CLASSIFICATION
@@ -324,12 +374,20 @@ train_treesatai <- function(data_path   = NULL,
   }
   cli::cli_text("")
   cli::cli_text("Mod\u00e8le sauvegard\u00e9 dans : {.path {models_dir}}")
+  if (use_multiyear) {
+    cli::cli_alert_info("Multi-ann\u00e9e : {length(years)} ans ({paste(years, collapse=', ')})")
+  }
+  if (!is.null(boruta_result)) {
+    cli::cli_alert_info("Boruta : {length(feature_cols)} features retenues")
+  }
 
   invisible(list(
     model          = rf_model,
     evaluation     = rf_eval,
     feature_matrix = feature_matrix,
     feature_cols   = feature_cols,
-    cv_results     = cv_results
+    cv_results     = cv_results,
+    boruta         = boruta_result,
+    years          = years
   ))
 }
