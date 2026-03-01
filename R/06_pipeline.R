@@ -372,10 +372,13 @@ train_treesatai <- function(data_path     = NULL,
   if (!is.null(eval_final)) {
     oa_val  <- eval_final$overall_accuracy
     kap_val <- eval_final$kappa
-    cli::cli_alert_info("OA : {round(oa_val * 100, 1)}%  |  Kappa : {round(kap_val, 3)}")
+    mf1_val <- eval_final$macro_f1
+    wf1_val <- eval_final$weighted_f1
+    cli::cli_alert_info("OA : {round(oa_val * 100, 1)}%  |  Kappa : {round(kap_val, 3)}  |  Macro F1 : {round(mf1_val * 100, 1)}%  |  Weighted F1 : {round(wf1_val * 100, 1)}%")
     cli::cli_text("")
     cli::cli_text(interpret_oa(oa_val))
     cli::cli_text(interpret_kappa(kap_val))
+    cli::cli_text(interpret_f1(mf1_val, wf1_val))
   }
   cli::cli_text("")
   cli::cli_text("Mod\u00e8le sauvegard\u00e9 dans : {.path {models_dir}}")

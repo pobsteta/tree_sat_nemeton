@@ -507,6 +507,7 @@ evaluate_classification <- function(y_true, y_pred, class_names = NULL) {
   cli::cli_text("")
   cli::cli_text(interpret_oa(OA))
   cli::cli_text(interpret_kappa(kappa))
+  cli::cli_text(interpret_f1(macro_f1, weighted_f1))
 
   results
 }
@@ -573,8 +574,66 @@ interpret_kappa <- function(k) {
          ". Le Kappa corrige l'OA du d\u00e9s\u00e9quilibre entre classes.")
 }
 
-#' Extraction de l'importance des variables depuis le modèle
-#' @param model Modèle ranger
+#' Interpr\u00e9tation qualitative du Macro F1-Score et du Weighted F1-Score
+#'
+#' F1-Score = moyenne harmonique de la pr\u00e9cision et du rappel.
+#' Il p\u00e9nalise les mod\u00e8les qui sacrifient l'un au profit de l'autre.
+#'
+#' Deux variantes multi-classes :
+#'   - Macro F1 : moyenne simple du F1 de chaque esp\u00e8ce (chaque esp\u00e8ce
+#'     p\u00e8se autant, qu'elle ait 10 ou 1000 \u00e9chantillons). Sensible aux
+#'     esp\u00e8ces rares mal class\u00e9es.
+#'   - Weighted F1 : moyenne pond\u00e9r\u00e9e par le nombre d'\u00e9chantillons par
+#'     esp\u00e8ce. Refl\u00e8te la performance globale en tenant compte de la
+#'     fr\u00e9quence de chaque esp\u00e8ce.
+#'
+#' Si Macro F1 << Weighted F1 : le mod\u00e8le classe bien les esp\u00e8ces
+#' fr\u00e9quentes mais \u00e9choue sur les esp\u00e8ces rares.
+#' Si Macro F1 \u2248 Weighted F1 : performance homog\u00e8ne entre esp\u00e8ces.
+#'
+#' @param macro_f1 Valeur entre 0 et 1
+#' @param weighted_f1 Valeur entre 0 et 1
+#' @return Cha\u00eene de caract\u00e8res d'interpr\u00e9tation (multi-lignes)
+interpret_f1 <- function(macro_f1, weighted_f1) {
+  m_pct <- round(macro_f1 * 100, 1)
+  w_pct <- round(weighted_f1 * 100, 1)
+
+  # Qualit\u00e9 du Macro F1
+  qualite <- if (macro_f1 >= 0.85) {
+    "excellente"
+  } else if (macro_f1 >= 0.70) {
+    "bonne"
+  } else if (macro_f1 >= 0.55) {
+    "mod\u00e9r\u00e9e"
+  } else {
+    "faible"
+  }
+
+  # \u00c9cart Macro vs Weighted
+  ecart <- abs(weighted_f1 - macro_f1)
+  if (ecart < 0.03) {
+    diag_ecart <- "Performance homog\u00e8ne entre esp\u00e8ces (Macro \u2248 Weighted)."
+  } else if (weighted_f1 > macro_f1) {
+    diag_ecart <- paste0(
+      "Ecart Macro/Weighted = ", round(ecart * 100, 1),
+      " pts : les esp\u00e8ces rares sont moins bien class\u00e9es que les fr\u00e9quentes.")
+  } else {
+    diag_ecart <- paste0(
+      "Ecart Macro/Weighted = ", round(ecart * 100, 1),
+      " pts : les esp\u00e8ces fr\u00e9quentes sont l\u00e9g\u00e8rement moins bien class\u00e9es.")
+  }
+
+  paste0(
+    "  Macro F1 = ", m_pct, "% \u2192 Qualit\u00e9 ", qualite,
+    " (moyenne \u00e9gale par esp\u00e8ce, sensible aux esp\u00e8ces rares).\n",
+    "  Weighted F1 = ", w_pct,
+    "% \u2192 Performance pond\u00e9r\u00e9e par la fr\u00e9quence de chaque esp\u00e8ce.\n",
+    "  ", diag_ecart
+  )
+}
+
+#' Extraction de l'importance des variables depuis le mod\u00e8le
+#' @param model Mod\u00e8le ranger
 #' @return data.frame avec colonnes variable, importance
 get_variable_importance <- function(model) {
   imp <- model$variable.importance
