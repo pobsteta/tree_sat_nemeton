@@ -611,7 +611,8 @@ build_s1_cube <- function(s1_bands_dir, aoi, year = 2021, resolution = 10) {
 
   cube_list <- list()
 
-  for (d in dates) {
+  for (i in seq_along(dates)) {
+    d <- dates[i]
     date_files <- file_info[file_info$date == d, ]
     stack <- list()
 
