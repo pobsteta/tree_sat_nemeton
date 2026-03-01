@@ -733,24 +733,44 @@ predict_species_map <- function(aoi_path,
     dem_dir <- file.path(RAW_DIR, "dem")
     dir.create(dem_dir, showWarnings = FALSE, recursive = TRUE)
 
-    # Télécharger le MNT (IGN 1m ou Copernicus 30m en fallback)
+    # Déterminer la source DEM
+    # - "auto" : détecte si l'AOI est en France → IGN 1 m, sinon Copernicus 30 m
+    # - "ign"  : force IGN (France uniquement)
+    # - "copernicus" : force Copernicus (Europe entière)
+    dem_src <- DEM_PARAMS$dem_source
+    if (dem_src == "auto") {
+      # Vérifier si l'AOI est en France métropolitaine (bbox approx)
+      aoi_wgs <- sf::st_transform(aoi, 4326)
+      bbox_wgs <- sf::st_bbox(aoi_wgs)
+      in_france <- bbox_wgs["xmin"] >= -5.5 && bbox_wgs["xmax"] <= 10 &&
+                   bbox_wgs["ymin"] >= 41 && bbox_wgs["ymax"] <= 51.5
+      dem_src <- if (in_france) "ign" else "copernicus"
+      log_msg("  Source DEM auto-détectée : {dem_src}")
+    }
+
+    # Télécharger le MNT
     dem_path <- tryCatch({
-      if (DEM_PARAMS$dem_source == "ign") {
+      if (dem_src == "ign") {
         download_dem_ign(aoi, output_dir = dem_dir,
                          resolution = DEM_PARAMS$resample_res)
       } else {
         download_dem_copernicus(aoi, output_dir = dem_dir)
       }
     }, error = function(e) {
-      log_msg("Erreur téléchargement MNT : {e$message}", level = "warning")
-      log_msg("Tentative fallback Copernicus DEM 30 m...", level = "warning")
-      tryCatch(
-        download_dem_copernicus(aoi, output_dir = dem_dir),
-        error = function(e2) {
-          log_msg("Impossible d'obtenir un MNT : {e2$message}", level = "danger")
-          NULL
-        }
-      )
+      log_msg("Erreur téléchargement MNT ({dem_src}) : {e$message}", level = "warning")
+      # Fallback : si IGN échoue, essayer Copernicus
+      if (dem_src == "ign") {
+        log_msg("Tentative fallback Copernicus DEM 30 m...", level = "warning")
+        tryCatch(
+          download_dem_copernicus(aoi, output_dir = dem_dir),
+          error = function(e2) {
+            log_msg("Impossible d'obtenir un MNT : {e2$message}", level = "danger")
+            NULL
+          }
+        )
+      } else {
+        NULL
+      }
     })
 
     if (!is.null(dem_path) && file.exists(dem_path)) {

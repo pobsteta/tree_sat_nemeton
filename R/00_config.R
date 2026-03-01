@@ -215,11 +215,16 @@ CLASSIF_PARAMS <- list(
 # --- Paramètres MNT / terrain -------------------------------------------------
 DEM_PARAMS <- list(
   # Source DEM pour la prédiction spatiale
-  # "ign" = RGE ALTI 1 m (Géoplateforme IGN, France uniquement)
-  # "copernicus" = Copernicus DEM 30 m (Europe, via Planetary Computer)
-  dem_source = "ign",
+  # "copernicus" = Copernicus DEM 30 m (Europe entière, via Planetary Computer) — défaut
+  # "ign" = RGE ALTI 1 m (Géoplateforme IGN, France métropolitaine uniquement)
+  # "auto" = Copernicus par défaut, IGN si l'AOI est en France
+  #
+  # Note : les données TreeSatAI proviennent de Basse-Saxe (Allemagne),
+  # donc seul Copernicus couvre la zone d'entraînement.
+  # IGN est utile uniquement pour la prédiction spatiale sur une AOI française.
+  dem_source = "copernicus",
 
-  # URL WCS de la Géoplateforme IGN (MNT 1 m RGE ALTI)
+  # URL WCS de la Géoplateforme IGN (MNT 1 m RGE ALTI, France uniquement)
   ign_wcs_url = "https://data.geopf.fr/wcs/ows",
   ign_coverage_id = "ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES",
 
