@@ -1,7 +1,7 @@
 # ==============================================================================
 # TreeSatAI-Time-Series (IGNF) — Pipeline complet (fonction package)
-# Classification de 20 essences forestières européennes
-# par séries temporelles Sentinel-2 annuelles
+# Classification de 10 classes forestières européennes
+# (20 espèces regroupées) par séries temporelles Sentinel-1/2 annuelles
 #
 # Usage depuis R :
 #   train_treesatai()                              # Données synthétiques
@@ -115,11 +115,18 @@ train_treesatai <- function(data_path   = NULL,
     }
   }
 
+  # Regroupement des 20 espèces en 10 classes forestières
+  cli::cli_alert_info("Regroupement des esp\u00e8ces en {length(unique(SPECIES_GROUPS))} classes")
+  ts_long <- remap_species_groups(ts_long)
+
   # Déterminer les noms de classes pour l'évaluation
   eval_class_names <- if (!is.null(treesatai) && !is.null(treesatai$genus_names)) {
-    treesatai$genus_names
+    # Remapper aussi les noms TreeSatAI si applicable
+    gnames <- treesatai$genus_names
+    gnames <- ifelse(gnames %in% names(SPECIES_GROUPS), SPECIES_GROUPS[gnames], gnames)
+    sort(unique(gnames))
   } else {
-    SPECIES$french
+    SPECIES_GROUPS_INFO$group
   }
 
   # ===========================================================================

@@ -106,7 +106,59 @@ SPECIES <- data.frame(
   stringsAsFactors = FALSE
 )
 
-# Palette de couleurs par espèce
+# --- Regroupement en 10 classes forestières ------------------------------------
+# Mapping : nom français (20 espèces) → nom du groupe (10 classes)
+SPECIES_GROUPS <- c(
+  "Chêne pédonculé"      = "Chênes caducs",
+  "Chêne sessile"        = "Chênes caducs",
+  "Chêne pubescent"      = "Chênes caducs",
+  "Chêne vert"           = "Chêne vert",
+  "Hêtre"                = "Hêtre",
+  "Châtaignier"          = "Châtaignier",
+  "Charme"               = "Autres feuillus",
+  "Bouleau verruqueux"   = "Autres feuillus",
+  "Frêne commun"         = "Autres feuillus",
+  "Érable sycomore"      = "Autres feuillus",
+  "Peupliers"            = "Autres feuillus",
+  "Robinier faux-acacia" = "Autres feuillus",
+  "Épicéa commun"        = "Sapins-Épicéas",
+  "Sapin pectiné"        = "Sapins-Épicéas",
+  "Douglas"              = "Douglas",
+  "Pin sylvestre"        = "Pin sylvestre",
+  "Pin maritime"         = "Autres Pins",
+  "Pin noir"             = "Autres Pins",
+  "Pin d'Alep"           = "Autres Pins",
+  "Mélèze d'Europe"      = "Mélèze"
+)
+
+# Metadata des 10 groupes
+SPECIES_GROUPS_INFO <- data.frame(
+  group = c("Chênes caducs", "Chêne vert", "Hêtre", "Châtaignier",
+            "Autres feuillus", "Sapins-Épicéas", "Douglas",
+            "Pin sylvestre", "Autres Pins", "Mélèze"),
+  type = c("feuillu", "feuillu", "feuillu", "feuillu", "feuillu",
+           "résineux", "résineux", "résineux", "résineux", "résineux"),
+  phenologie = c("caducifolié", "sempervirent", "caducifolié", "caducifolié",
+                 "caducifolié", "sempervirent", "sempervirent",
+                 "sempervirent", "sempervirent", "caducifolié"),
+  stringsAsFactors = FALSE
+)
+
+# Palette de couleurs par groupe (10 classes)
+SPECIES_GROUP_COLORS <- c(
+  "Chênes caducs"   = "#1b9e77",
+  "Chêne vert"      = "#d95f02",
+  "Hêtre"           = "#7570b3",
+  "Châtaignier"     = "#e7298a",
+  "Autres feuillus" = "#66a61e",
+  "Sapins-Épicéas"  = "#003c30",
+  "Douglas"         = "#01665e",
+  "Pin sylvestre"   = "#80cdc1",
+  "Autres Pins"     = "#bf812d",
+  "Mélèze"          = "#dfc27d"
+)
+
+# Palette de couleurs par espèce (20 espèces — usage détaillé)
 SPECIES_COLORS <- c(
   "#1b9e77", "#d95f02", "#7570b3", "#e7298a", "#66a61e",
   "#e6ab02", "#a6761d", "#666666", "#8dd3c7", "#ffffb3",

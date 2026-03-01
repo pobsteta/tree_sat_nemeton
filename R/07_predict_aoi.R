@@ -915,10 +915,16 @@ compute_map_statistics <- function(predictions, rasters) {
   # Trier par surface décroissante
   stats <- stats[order(-stats$n_pixels), ]
 
-  # Ajouter le type
-  stats <- stats |>
-    dplyr::left_join(SPECIES[, c("french", "type", "phenologie")],
-                     by = c("espece" = "french"))
+  # Ajouter le type (compatible avec les 10 groupes ou les 20 espèces)
+  if (all(stats$espece %in% SPECIES_GROUPS_INFO$group)) {
+    stats <- stats |>
+      dplyr::left_join(SPECIES_GROUPS_INFO[, c("group", "type", "phenologie")],
+                       by = c("espece" = "group"))
+  } else {
+    stats <- stats |>
+      dplyr::left_join(SPECIES[, c("french", "type", "phenologie")],
+                       by = c("espece" = "french"))
+  }
 
   stats
 }

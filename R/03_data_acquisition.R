@@ -7,6 +7,38 @@
 # Configuration et utilitaires chargés via le package
 
 # ==============================================================================
+# Regroupement des 20 espèces en 10 classes forestières
+# ==============================================================================
+
+#' Remapper les noms d'espèces en groupes (20 → 10 classes)
+#'
+#' Remplace species_name par le nom du groupe correspondant
+#' (défini dans SPECIES_GROUPS de 00_config.R).
+#' Les espèces non présentes dans le mapping sont conservées telles quelles.
+#'
+#' @param ts_long data.frame en format long avec colonne species_name
+#' @return data.frame avec species_name remappé en groupes
+#' @export
+remap_species_groups <- function(ts_long) {
+  original_names <- unique(ts_long$species_name)
+  ts_long$species_name <- ifelse(
+    ts_long$species_name %in% names(SPECIES_GROUPS),
+    SPECIES_GROUPS[ts_long$species_name],
+    ts_long$species_name
+  )
+  new_names <- unique(ts_long$species_name)
+  log_msg("Regroupement : {length(original_names)} espèces → {length(new_names)} classes")
+  for (g in sort(unique(ts_long$species_name))) {
+    n <- sum(original_names %in% names(SPECIES_GROUPS[SPECIES_GROUPS == g]))
+    if (n > 1) {
+      members <- names(SPECIES_GROUPS[SPECIES_GROUPS == g])
+      log_msg("  {g} ← {paste(members, collapse = ', ')}", level = "info")
+    }
+  }
+  ts_long
+}
+
+# ==============================================================================
 # OPTION 1 : Chargement du dataset TreeSatAI-Time-Series pré-constitué
 # ==============================================================================
 

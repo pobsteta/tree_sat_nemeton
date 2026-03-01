@@ -9,6 +9,7 @@ export(download_treesatai_hf)
 export(train_treesatai)
 
 # --- Data acquisition ---
+export(remap_species_groups)
 export(download_treesatai_ts)
 export(load_ifn_plots)
 export(extract_s2_timeseries)
