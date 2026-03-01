@@ -20,28 +20,31 @@
 # 0. MASQUE FORESTIER (OSO + NDVI)
 # ==============================================================================
 
-#' Télécharger la carte OSO (CESBIO) pour une AOI
+#' Télécharger les données d'occupation du sol pour une AOI
 #'
-#' Télécharge la carte d'occupation du sol OSO depuis Recherche Data Gouv.
-#' La carte OSO est produite annuellement par le CESBIO/CNES à partir de
-#' Sentinel-2 à 10 m et couvre la France métropolitaine.
+#' Stratégie multi-source (du plus léger au plus lourd) :
 #'
-#' Nomenclature OSO (23 classes, depuis 2018) :
-#'   17 = Feuillus, 18 = Conifères
+#'   1. **WFS Géoplateforme IGN** (prioritaire, quelques Ko) :
+#'      - OCS GE : couche `OCSGE.COUVERTURE:couverture` (Occupation du Sol Grande Échelle)
+#'      - BD Forêt V2 : couche `LANDCOVER.FORESTINVENTORY.V2:formation_vegetale`
+#'      Accès libre, données vectorielles découpées à la bbox, rasterisées sur place.
+#'      Ref : https://geoservices.ign.fr/services-web-experts-ocsge
 #'
-#' Stratégie de téléchargement (alignée sur le package nemeton) :
-#'   1. Cache global : le raster France entière (~6 Go) est téléchargé une seule
-#'      fois dans un répertoire partagé (évite la duplication par projet)
-#'   2. Découpe locale : le raster est croppé à l'AOI et sauvegardé par projet
-#'   3. Fallback : recherche de fichier local existant
+#'   2. **OSO raster CESBIO** (~6 Go, cache global Recherche Data Gouv) :
+#'      Raster 10 m France entière, classes 16 = Feuillus / 17 = Conifères.
+#'      Ref : https://entrepot.recherche.data.gouv.fr/dataset.xhtml?persistentId=doi:10.57745/UZ2NJ7
 #'
-#' @param aoi sf object — zone d'intérêt (sera reprojetée en Lambert-93)
-#' @param year Année OSO (2018–2023 disponibles)
+#'   3. **Fichier local** : recherche dans data/raw/, data/, cache global.
+#'
+#' @param aoi sf object — zone d'intérêt
+#' @param year Année (pour la correspondance millésime OCS GE / OSO)
 #' @param output_dir Répertoire de sortie (cache projet)
-#' @return Chemin vers le raster OSO découpé à l'AOI (GeoTIFF, Lambert-93)
+#' @param resolution Résolution cible pour la rastérisation (mètres, défaut 10)
+#' @return Chemin vers le raster d'occupation du sol découpé à l'AOI (GeoTIFF)
 #' @export
 download_oso <- function(aoi, year = FOREST_MASK_PARAMS$oso_year,
-                          output_dir = file.path(RAW_DIR, "oso")) {
+                          output_dir = file.path(RAW_DIR, "oso"),
+                          resolution = 10) {
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
   oso_file <- file.path(output_dir, paste0("oso_", year, ".tif"))
 
@@ -51,33 +54,112 @@ download_oso <- function(aoi, year = FOREST_MASK_PARAMS$oso_year,
     return(oso_file)
   }
 
-  log_msg("Téléchargement de la carte OSO {year} (CESBIO)...")
+  log_msg("Acquisition du masque d'occupation du sol...")
 
-  # L'AOI en Lambert-93
+  # L'AOI en Lambert-93 et en WGS84
   aoi_proj <- sf::st_transform(aoi, 2154)
+  aoi_wgs84 <- sf::st_transform(aoi, 4326)
+  bbox_wgs84 <- sf::st_bbox(aoi_wgs84)
 
-  # --- Cache global : raster France entière (partagé entre projets) ---
-  # OSO fait ~6 Go, on ne veut pas le retélécharger pour chaque AOI
+  # =====================================================================
+  # Stratégie 1 : WFS Géoplateforme IGN (BD Forêt V2 — vecteur, léger)
+  # =====================================================================
+  # La BD Forêt V2 contient les formations végétales avec le type de forêt.
+  # Accès libre via WFS, données vectorielles, quelques Ko pour une AOI.
+  # Même approche que le package nemeton (download_ign_bdforet).
+
+  log_msg("  Tentative WFS Géoplateforme (BD Forêt V2)...")
+  wfs_ok <- tryCatch({
+    wfs_url <- "https://data.geopf.fr/wfs/ows"
+    typename <- "LANDCOVER.FORESTINVENTORY.V2:formation_vegetale"
+
+    # Construire la requête WFS GetFeature avec bbox
+    bbox_str <- paste(
+      round(bbox_wgs84["ymin"], 6), round(bbox_wgs84["xmin"], 6),
+      round(bbox_wgs84["ymax"], 6), round(bbox_wgs84["xmax"], 6),
+      sep = ","
+    )
+
+    wfs_request <- paste0(
+      wfs_url,
+      "?SERVICE=WFS",
+      "&VERSION=2.0.0",
+      "&REQUEST=GetFeature",
+      "&TYPENAMES=", typename,
+      "&BBOX=", bbox_str, ",EPSG:4326",
+      "&OUTPUTFORMAT=application/json",
+      "&COUNT=50000"
+    )
+
+    tmp_json <- tempfile(fileext = ".json")
+    resp <- httr2::request(wfs_request) |>
+      httr2::req_timeout(60) |>
+      httr2::req_perform()
+
+    httr2::resp_body_raw(resp) |> writeBin(tmp_json)
+
+    # Lire le GeoJSON
+    bdforet <- sf::st_read(tmp_json, quiet = TRUE)
+    unlink(tmp_json)
+
+    if (nrow(bdforet) == 0) {
+      log_msg("  Aucune formation végétale trouvée via WFS", level = "warning")
+      FALSE
+    } else {
+      log_msg("  BD Forêt V2 : {nrow(bdforet)} polygones récupérés", level = "success")
+
+      # Reprojeter en Lambert-93
+      bdforet <- sf::st_transform(bdforet, 2154)
+
+      # Créer un raster template aligné sur l'AOI
+      aoi_ext <- terra::ext(terra::vect(aoi_proj))
+      template <- terra::rast(aoi_ext, resolution = resolution, crs = "EPSG:2154")
+
+      # Rastériser : toutes les formations végétales = 1 (forêt)
+      # La BD Forêt V2 ne contient QUE des zones boisées
+      bdforet_vect <- terra::vect(bdforet)
+      r_forest <- terra::rasterize(bdforet_vect, template, field = 1, background = 0)
+      names(r_forest) <- "forest"
+
+      # Masquer à l'AOI
+      aoi_vect <- terra::vect(aoi_proj)
+      r_forest <- terra::mask(r_forest, aoi_vect)
+
+      terra::writeRaster(r_forest, oso_file, datatype = "INT1U", overwrite = TRUE)
+      log_msg("  Masque forêt (BD Forêt V2) sauvegardé : {oso_file}", level = "success")
+      TRUE
+    }
+  }, error = function(e) {
+    log_msg("  WFS Géoplateforme indisponible : {e$message}", level = "warning")
+    FALSE
+  })
+
+  if (wfs_ok) return(oso_file)
+
+  # =====================================================================
+  # Stratégie 2 : OSO raster CESBIO (Recherche Data Gouv, ~6 Go)
+  # =====================================================================
+  log_msg("  Tentative OSO raster (Recherche Data Gouv)...")
+
+  # Cache global : raster France entière (partagé entre projets)
   global_cache <- file.path(
     rappdirs::user_cache_dir("treesatnemeton"), "oso"
   )
   dir.create(global_cache, showWarnings = FALSE, recursive = TRUE)
   oso_global <- file.path(global_cache, "oso.tif")
 
-  # --- Stratégie 1 : Cache global déjà présent ---
   if (!file.exists(oso_global)) {
-    # --- Stratégie 2 : Téléchargement depuis Recherche Data Gouv ---
+    # Téléchargement depuis Recherche Data Gouv
     # Source : https://entrepot.recherche.data.gouv.fr/dataset.xhtml?persistentId=doi:10.57745/UZ2NJ7
     oso_url <- "https://entrepot.recherche.data.gouv.fr/api/access/datafile/:persistentId?persistentId=doi:10.57745/8M1AN1"
 
-    # Vérifier si l'archive existe déjà
     oso_tar <- file.path(global_cache, "OSO_RASTER.tar.gz")
     oso_tar_files <- list.files(global_cache, pattern = "^OSO_.*\\.tar\\.gz$",
                                  full.names = TRUE)
     if (length(oso_tar_files) > 0) oso_tar <- oso_tar_files[1]
 
     need_download <- TRUE
-    oso_expected_size <- 5e9  # ~5-6 Go
+    oso_expected_size <- 5e9
 
     if (file.exists(oso_tar) && file.info(oso_tar)$size >= oso_expected_size) {
       log_msg("  Archive OSO existante ({round(file.info(oso_tar)$size/1e9, 1)} Go)",
@@ -86,53 +168,43 @@ download_oso <- function(aoi, year = FOREST_MASK_PARAMS$oso_year,
     }
 
     if (need_download) {
-      log_msg("  Téléchargement OSO depuis Recherche Data Gouv (~6 Go)...")
+      log_msg("  Téléchargement OSO (~6 Go, patience...)...")
       log_msg("  Cache global : {global_cache}", level = "info")
 
       download_ok <- tryCatch({
-        # Augmenter le timeout pour un gros fichier (1 heure)
         old_timeout <- getOption("timeout")
         options(timeout = 3600)
         on.exit(options(timeout = old_timeout), add = TRUE)
 
         if (requireNamespace("curl", quietly = TRUE)) {
-          # Téléchargement par chunks avec curl (recommandé pour gros fichiers)
           h <- curl::new_handle()
           curl::handle_setopt(h,
-            followlocation = TRUE,
-            timeout = 3600,
-            low_speed_limit = 1000,
-            low_speed_time = 300
+            followlocation = TRUE, timeout = 3600,
+            low_speed_limit = 1000, low_speed_time = 300
           )
-
           con <- curl::curl(oso_url, handle = h, open = "rb")
           on.exit(try(close(con), silent = TRUE), add = TRUE)
           out <- file(oso_tar, open = "wb")
           on.exit(try(close(out), silent = TRUE), add = TRUE)
 
           downloaded <- 0
-          chunk_size <- 1024 * 1024  # 1 Mo
+          chunk_size <- 1024 * 1024
           last_pct <- -1
-
           while (TRUE) {
             buf <- readBin(con, raw(), n = chunk_size)
             if (length(buf) == 0) break
             writeBin(buf, out)
             downloaded <- downloaded + length(buf)
-
             pct <- min(floor(downloaded / oso_expected_size * 100), 99)
             if (pct %% 10 == 0 && pct != last_pct) {
               log_msg("  Téléchargement : {pct}% ({round(downloaded/1e9, 1)} Go)")
               last_pct <- pct
             }
           }
-          close(out)
-          close(con)
-
+          close(out); close(con)
           log_msg("  OSO téléchargé : {round(downloaded/1e9, 1)} Go", level = "success")
           TRUE
         } else {
-          # Fallback : utils::download.file
           utils::download.file(oso_url, oso_tar, mode = "wb", quiet = FALSE)
           TRUE
         }
@@ -140,30 +212,17 @@ download_oso <- function(aoi, year = FOREST_MASK_PARAMS$oso_year,
         log_msg("  Échec téléchargement OSO : {e$message}", level = "warning")
         FALSE
       })
-
-      if (!download_ok || !file.exists(oso_tar) ||
-          file.info(oso_tar)$size < oso_expected_size) {
-        log_msg("  Téléchargement incomplet ou échoué.", level = "warning")
-        log_msg("  Téléchargez manuellement depuis :", level = "warning")
-        log_msg("  https://entrepot.recherche.data.gouv.fr/dataset.xhtml?persistentId=doi:10.57745/UZ2NJ7",
-                level = "warning")
-        log_msg("  Extrayez oso.tif dans : {global_cache}", level = "warning")
-      }
     }
 
-    # Extraire l'archive si elle existe
+    # Extraire l'archive
     if (file.exists(oso_tar) && !file.exists(oso_global)) {
       log_msg("  Extraction de l'archive OSO...")
       utils::untar(oso_tar, exdir = global_cache)
-
-      # Chercher le TIF extrait (nommé OCS_*.tif dans l'archive)
       tif_files <- list.files(global_cache, pattern = "^OCS_.*\\.tif$",
                                recursive = TRUE, full.names = TRUE)
       if (length(tif_files) > 0) {
         file.copy(tif_files[1], oso_global, overwrite = TRUE)
         log_msg("  OSO extrait : {oso_global}", level = "success")
-
-        # Nettoyage : supprimer les répertoires intermédiaires
         oso_dirs <- list.dirs(global_cache, full.names = TRUE, recursive = FALSE)
         oso_dirs <- oso_dirs[grepl("^OSO_", basename(oso_dirs))]
         if (length(oso_dirs) > 0) unlink(oso_dirs, recursive = TRUE)
@@ -171,14 +230,15 @@ download_oso <- function(aoi, year = FOREST_MASK_PARAMS$oso_year,
     }
   }
 
-  # --- Stratégie 3 : Fichier local existant ---
+  # =====================================================================
+  # Stratégie 3 : Fichier local existant
+  # =====================================================================
   if (!file.exists(oso_global)) {
-    # Chercher un fichier OSO déjà présent localement
     search_dirs <- unique(c(RAW_DIR, DATA_DIR, output_dir, global_cache))
     search_dirs <- search_dirs[dir.exists(search_dirs)]
     existing <- list.files(
       search_dirs,
-      pattern = paste0("(OSO|oso|OCS).*\\.(tif|TIF)$"),
+      pattern = "(OSO|oso|OCS).*\\.(tif|TIF)$",
       recursive = TRUE, full.names = TRUE
     )
     if (length(existing) > 0) {
@@ -188,21 +248,19 @@ download_oso <- function(aoi, year = FOREST_MASK_PARAMS$oso_year,
   }
 
   if (!file.exists(oso_global)) {
-    log_msg("  OSO non disponible. Masque NDVI seul sera utilisé.", level = "warning")
+    log_msg("  Aucune donnée d'occupation du sol disponible.", level = "warning")
+    log_msg("  Masque NDVI seul sera utilisé.", level = "warning")
     return(NULL)
   }
 
-  # --- Découper à l'AOI (cache projet) ---
+  # Découper le raster OSO à l'AOI
   log_msg("  Découpe OSO à l'AOI...")
   tryCatch({
     r <- terra::rast(oso_global)
     aoi_vect <- terra::vect(aoi_proj)
-
-    # Reprojeter l'AOI dans le CRS de l'OSO si nécessaire
     if (!terra::same.crs(r, aoi_vect)) {
       aoi_vect <- terra::project(aoi_vect, terra::crs(r))
     }
-
     r_crop <- terra::crop(r, aoi_vect)
     r_mask <- terra::mask(r_crop, aoi_vect)
     terra::writeRaster(r_mask, oso_file, datatype = "INT1U", overwrite = TRUE)
@@ -214,14 +272,18 @@ download_oso <- function(aoi, year = FOREST_MASK_PARAMS$oso_year,
   })
 }
 
-#' Construire un masque forêt OSO (binaire)
+#' Construire un masque forêt à partir du raster d'occupation du sol (binaire)
 #'
-#' Convertit la carte OSO en masque binaire forêt (1) / non-forêt (0),
+#' Convertit le raster d'occupation du sol en masque binaire forêt (1) / non-forêt (0),
 #' rééchantillonné sur la grille du cube Sentinel-2.
 #'
-#' @param oso_path Chemin vers le raster OSO
+#' Gère deux cas :
+#'   - BD Forêt V2 (via WFS) : déjà binaire (1 = forêt, 0 = non-forêt)
+#'   - OSO CESBIO : classes 16 = Feuillus, 17 = Conifères → binaire
+#'
+#' @param oso_path Chemin vers le raster d'occupation du sol
 #' @param template SpatRaster — grille cible (même résolution/emprise que le cube S2)
-#' @param forest_classes Codes OSO considérés comme forestiers
+#' @param forest_classes Codes OSO considérés comme forestiers (ignoré si BD Forêt)
 #' @return SpatRaster binaire aligné sur le template (1 = forêt, 0 = non-forêt)
 #' @export
 build_oso_forest_mask <- function(oso_path, template,
@@ -231,9 +293,19 @@ build_oso_forest_mask <- function(oso_path, template,
   # Rééchantillonner sur la grille S2 (nearest neighbor pour catégoriel)
   r_oso <- terra::resample(r_oso, template, method = "near")
 
-  # Convertir en masque binaire : 1 si dans forest_classes, 0 sinon
   oso_vals <- terra::values(r_oso)[, 1]
-  mask_vals <- as.integer(oso_vals %in% forest_classes)
+  unique_vals <- unique(stats::na.omit(oso_vals))
+
+  # Détecter si le raster est déjà binaire (BD Forêt WFS : valeurs 0/1 uniquement)
+  is_binary <- length(unique_vals) <= 2 && all(unique_vals %in% c(0, 1))
+
+  if (is_binary) {
+    # BD Forêt V2 : déjà 1 = forêt, 0 = non-forêt
+    mask_vals <- as.integer(oso_vals == 1L)
+  } else {
+    # OSO CESBIO : filtrer par classes forestières (16 = Feuillus, 17 = Conifères)
+    mask_vals <- as.integer(oso_vals %in% forest_classes)
+  }
   mask_vals[is.na(oso_vals)] <- 0L
 
   r_mask <- terra::rast(template)
