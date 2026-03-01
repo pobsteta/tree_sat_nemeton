@@ -333,7 +333,7 @@ plot_spectral_heatmap <- function(feature_matrix, save_path = NULL) {
     cluster_cols = FALSE,
     cluster_rows = TRUE,
     color = viridis::viridis(100),
-    main = "Signatures phénologiques NDVI — 20 espèces (z-score)",
+    main = glue::glue("Signatures ph\u00e9nologiques NDVI \u2014 {nrow(heatmap_data)} classes (z-score)"),
     fontsize = 8,
     fontsize_row = 7,
     angle_col = 45,
@@ -477,7 +477,7 @@ plot_dashboard <- function(plots, save_path = NULL) {
                (plots$importance + plots$metrics) +
     patchwork::plot_annotation(
       title = "TreeSatAI-Time-Series — Tableau de bord de classification",
-      subtitle = "20 espèces européennes — Sentinel-2 séries temporelles annuelles",
+      subtitle = glue::glue("{nrow(SPECIES_GROUPS_INFO)} classes foresti\u00e8res \u2014 Sentinel-1/2 s\u00e9ries temporelles"),
       theme = theme(
         plot.title = element_text(size = 14, face = "bold"),
         plot.subtitle = element_text(size = 10)
