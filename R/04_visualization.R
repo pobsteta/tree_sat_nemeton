@@ -294,6 +294,157 @@ plot_variable_importance <- function(importance_df, top_n = 30,
   p
 }
 
+#' Trac\u00e9 de l'importance de TOUTES les variables (Random Forest)
+#'
+#' Affiche l'ensemble des variables class\u00e9es par importance d\u00e9croissante,
+#' color\u00e9es par type de feature. Utile pour visualiser la contribution
+#' globale de chaque feature, y compris celles de faible importance.
+#'
+#' @param importance_df data.frame avec colonnes variable, importance
+#' @param title Titre
+#' @param save_path Chemin de sauvegarde
+#' @return Objet ggplot
+plot_variable_importance_all <- function(importance_df,
+                                          title = "Importance de toutes les variables",
+                                          save_path = NULL) {
+  imp <- importance_df |>
+    dplyr::arrange(dplyr::desc(importance)) |>
+    dplyr::mutate(
+      feature_type = dplyr::case_when(
+        grepl("^pheno_|_pheno_", variable)   ~ "Ph\u00e9nologie",
+        grepl("^NDVI|^EVI|^NDWI|^CRI|^NBR", variable) ~ "Indice spectral",
+        grepl("^fourier_|_fourier_", variable) ~ "Fourier",
+        grepl("^B\\d|^B8A", variable)          ~ "Bande spectrale",
+        grepl("^S1_|^s1_", variable)           ~ "Radar S1",
+        grepl("^terrain_|^elev|^slope|^aspect|^twi|^tpi", variable) ~ "Terrain",
+        TRUE                                    ~ "Autre"
+      ),
+      rank = dplyr::row_number()
+    )
+
+  type_colors <- c(
+    "Ph\u00e9nologie"       = "#e41a1c",
+    "Indice spectral"  = "#377eb8",
+    "Fourier"          = "#4daf4a",
+    "Bande spectrale"  = "#984ea3",
+    "Radar S1"         = "#ff7f00",
+    "Terrain"          = "#a65628",
+    "Autre"            = "#999999"
+  )
+
+  n_vars <- nrow(imp)
+  # Adapter la taille des labels selon le nombre de variables
+  label_size <- if (n_vars > 100) 3 else if (n_vars > 50) 4.5 else 6
+
+  p <- ggplot(imp, aes(x = reorder(variable, importance),
+                         y = importance, fill = feature_type)) +
+    geom_col(alpha = 0.85) +
+    coord_flip() +
+    scale_fill_manual(values = type_colors, name = "Type de feature") +
+    labs(
+      title = title,
+      subtitle = glue::glue("{n_vars} variables (Random Forest MDA)"),
+      x = NULL,
+      y = "Mean Decrease Accuracy"
+    ) +
+    theme_minimal(base_size = VIS_PARAMS$font_size) +
+    theme(
+      axis.text.y = element_text(size = label_size),
+      plot.title = element_text(face = "bold"),
+      legend.position = "bottom"
+    )
+
+  if (!is.null(save_path)) {
+    # Hauteur adaptative selon le nombre de variables
+    h <- max(20, n_vars * 0.35)
+    ggsave(save_path, p, width = VIS_PARAMS$width_cm, height = h,
+           units = "cm", dpi = VIS_PARAMS$dpi, limitsize = FALSE)
+    log_msg("Importance (toutes variables) sauvegard\u00e9e : {save_path}", level = "success")
+  }
+
+  p
+}
+
+#' Trac\u00e9 de l'importance Boruta (d\u00e9cisions Confirmed / Rejected)
+#'
+#' Affiche l'importance moyenne de chaque variable telle qu'\u00e9valu\u00e9e par
+#' Boruta, color\u00e9e par d\u00e9cision (Confirmed = retenue, Rejected = rejet\u00e9e,
+#' Tentative = ind\u00e9cise). Permet de comprendre pourquoi certaines variables
+#' ont \u00e9t\u00e9 \u00e9limin\u00e9es.
+#'
+#' @param boruta_importance_df data.frame avec colonnes variable, decision, meanImp
+#'   (issu de select_features_boruta()$importance_df ou lu depuis boruta_importance.csv)
+#' @param title Titre
+#' @param save_path Chemin de sauvegarde
+#' @return Objet ggplot
+plot_boruta_importance <- function(boruta_importance_df,
+                                    title = "S\u00e9lection Boruta \u2014 Importance et d\u00e9cisions",
+                                    save_path = NULL) {
+  imp <- boruta_importance_df |>
+    dplyr::arrange(dplyr::desc(meanImp)) |>
+    dplyr::mutate(
+      decision_label = dplyr::case_when(
+        decision == "Confirmed" ~ "Retenue",
+        decision == "Rejected"  ~ "Rejet\u00e9e",
+        decision == "Tentative" ~ "Tentative",
+        TRUE ~ decision
+      ),
+      feature_type = dplyr::case_when(
+        grepl("^pheno_|_pheno_", variable)   ~ "Ph\u00e9nologie",
+        grepl("^NDVI|^EVI|^NDWI|^CRI|^NBR", variable) ~ "Indice spectral",
+        grepl("^fourier_|_fourier_", variable) ~ "Fourier",
+        grepl("^B\\d|^B8A", variable)          ~ "Bande spectrale",
+        grepl("^S1_|^s1_", variable)           ~ "Radar S1",
+        grepl("^terrain_|^elev|^slope|^aspect|^twi|^tpi", variable) ~ "Terrain",
+        TRUE                                    ~ "Autre"
+      )
+    )
+
+  decision_colors <- c(
+    "Retenue"   = "#1a9850",
+    "Rejet\u00e9e"   = "#d73027",
+    "Tentative" = "#fee08b"
+  )
+
+  n_confirmed <- sum(imp$decision == "Confirmed")
+  n_rejected  <- sum(imp$decision == "Rejected")
+  n_tentative <- sum(imp$decision == "Tentative")
+  n_total     <- nrow(imp)
+
+  label_size <- if (n_total > 100) 3 else if (n_total > 50) 4.5 else 6
+
+  p <- ggplot(imp, aes(x = reorder(variable, meanImp),
+                         y = meanImp, fill = decision_label)) +
+    geom_col(alpha = 0.85) +
+    coord_flip() +
+    scale_fill_manual(values = decision_colors, name = "D\u00e9cision Boruta") +
+    labs(
+      title = title,
+      subtitle = glue::glue(
+        "{n_total} variables \u00e9valu\u00e9es : ",
+        "{n_confirmed} retenues, {n_rejected} rejet\u00e9es",
+        if (n_tentative > 0) paste0(", ", n_tentative, " tentatives") else ""
+      ),
+      x = NULL,
+      y = "Importance moyenne (Boruta)"
+    ) +
+    theme_minimal(base_size = VIS_PARAMS$font_size) +
+    theme(
+      axis.text.y = element_text(size = label_size),
+      plot.title = element_text(face = "bold"),
+      legend.position = "bottom"
+    )
+
+  if (!is.null(save_path)) {
+    h <- max(20, n_total * 0.35)
+    ggsave(save_path, p, width = VIS_PARAMS$width_cm, height = h,
+           units = "cm", dpi = VIS_PARAMS$dpi, limitsize = FALSE)
+    log_msg("Importance Boruta sauvegard\u00e9e : {save_path}", level = "success")
+  }
+
+  p
+}
+
 # --- Heatmap des signatures spectrales ---------------------------------------
 
 #' Heatmap des profils spectraux moyens par espèce

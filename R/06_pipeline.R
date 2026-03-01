@@ -342,11 +342,29 @@ train_treesatai <- function(data_path     = NULL,
     )
 
     if (!is.null(rf_importance)) {
+      # Top 30 variables (vue synth\u00e9tique)
       plot_variable_importance(
         rf_importance,
         top_n = 30,
         save_path = file.path(figures_dir, "05_variable_importance.png")
       )
+      # TOUTES les variables (vue compl\u00e8te)
+      plot_variable_importance_all(
+        rf_importance,
+        save_path = file.path(figures_dir, "05b_variable_importance_all.png")
+      )
+    }
+
+    # Importance Boruta (si disponible)
+    if (!is.null(boruta_result)) {
+      boruta_imp_path <- file.path(output_dir, "boruta_importance.csv")
+      if (file.exists(boruta_imp_path)) {
+        boruta_imp_df <- readr::read_csv(boruta_imp_path, show_col_types = FALSE)
+        plot_boruta_importance(
+          boruta_imp_df,
+          save_path = file.path(figures_dir, "05c_boruta_importance.png")
+        )
+      }
     }
 
     plot_species_metrics(
