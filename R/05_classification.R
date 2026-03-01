@@ -497,13 +497,80 @@ evaluate_classification <- function(y_true, y_pred, class_names = NULL) {
   )
 
   # Affichage
-  cli::cli_h2("Résultats de classification")
+  cli::cli_h2("R\u00e9sultats de classification")
   cli::cli_alert_success("Overall Accuracy : {round(OA * 100, 2)}%")
   cli::cli_alert_info("Kappa de Cohen   : {round(kappa, 4)}")
   cli::cli_alert_info("Macro F1-Score   : {round(macro_f1 * 100, 2)}%")
   cli::cli_alert_info("Weighted F1      : {round(weighted_f1 * 100, 2)}%")
 
+  # Interpr\u00e9tation
+  cli::cli_text("")
+  cli::cli_text(interpret_oa(OA))
+  cli::cli_text(interpret_kappa(kappa))
+
   results
+}
+
+#' Interpr\u00e9tation qualitative de l'Overall Accuracy (OA)
+#'
+#' L'OA mesure la proportion de pixels/parcelles correctement class\u00e9s.
+#' Un OA de 100% signifie une classification parfaite.
+#' Attention : l'OA peut \u00eatre trompeuse si les classes sont d\u00e9s\u00e9quilibr\u00e9es
+#' (un mod\u00e8le qui pr\u00e9dit toujours la classe majoritaire peut avoir un OA \u00e9lev\u00e9).
+#' C'est pourquoi on compl\u00e8te toujours l'OA par le Kappa et le F1-Score.
+#'
+#' @param oa Valeur entre 0 et 1
+#' @return Cha\u00eene de caract\u00e8res d'interpr\u00e9tation
+interpret_oa <- function(oa) {
+  pct <- round(oa * 100, 1)
+  qualite <- if (oa >= 0.90) {
+    "Excellente"
+  } else if (oa >= 0.80) {
+    "Tr\u00e8s bonne"
+  } else if (oa >= 0.70) {
+    "Bonne"
+  } else if (oa >= 0.60) {
+    "Mod\u00e9r\u00e9e"
+  } else if (oa >= 0.50) {
+    "Faible"
+  } else {
+    "Insuffisante (inf\u00e9rieure au hasard pour classification binaire)"
+  }
+  paste0("  OA = ", pct, "% \u2192 Pr\u00e9cision globale ", tolower(qualite),
+         " : ", pct, "% des \u00e9chantillons correctement class\u00e9s.")
+}
+
+#' Interpr\u00e9tation qualitative du Kappa de Cohen
+#'
+#' Le Kappa mesure l'accord entre classification et r\u00e9f\u00e9rence, corrig\u00e9 du hasard.
+#' Contrairement \u00e0 l'OA, le Kappa tient compte du d\u00e9s\u00e9quilibre des classes :
+#'   - Kappa = 1   : accord parfait
+#'   - Kappa = 0   : accord \u00e9gal au hasard
+#'   - Kappa < 0   : accord inf\u00e9rieur au hasard (mod\u00e8le incoh\u00e9rent)
+#'
+#' \u00c9chelle de Landis & Koch (1977) :
+#'   0.81\u20131.00 Excellent | 0.61\u20130.80 Substantiel | 0.41\u20130.60 Mod\u00e9r\u00e9
+#'   0.21\u20130.40 Passable  | 0.00\u20130.20 L\u00e9ger      | < 0 Nul
+#'
+#' @param k Valeur du Kappa (g\u00e9n\u00e9ralement entre -1 et 1)
+#' @return Cha\u00eene de caract\u00e8res d'interpr\u00e9tation
+interpret_kappa <- function(k) {
+  k_r <- round(k, 3)
+  qualite <- if (k >= 0.81) {
+    "Excellent (Landis & Koch)"
+  } else if (k >= 0.61) {
+    "Substantiel (Landis & Koch)"
+  } else if (k >= 0.41) {
+    "Mod\u00e9r\u00e9 (Landis & Koch)"
+  } else if (k >= 0.21) {
+    "Passable (Landis & Koch)"
+  } else if (k >= 0.0) {
+    "L\u00e9ger \u2014 le mod\u00e8le fait \u00e0 peine mieux que le hasard"
+  } else {
+    "N\u00e9gatif \u2014 le mod\u00e8le fait pire que le hasard"
+  }
+  paste0("  Kappa = ", k_r, " \u2192 Accord ", tolower(qualite),
+         ". Le Kappa corrige l'OA du d\u00e9s\u00e9quilibre entre classes.")
 }
 
 #' Extraction de l'importance des variables depuis le modèle

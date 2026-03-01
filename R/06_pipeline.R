@@ -370,7 +370,12 @@ train_treesatai <- function(data_path     = NULL,
   cli::cli_h1("R\u00e9sum\u00e9")
   cli::cli_alert_success("Pipeline termin\u00e9 avec succ\u00e8s !")
   if (!is.null(eval_final)) {
-    cli::cli_alert_info("OA : {round(eval_final$overall_accuracy * 100, 1)}%  |  Kappa : {round(eval_final$kappa, 3)}")
+    oa_val  <- eval_final$overall_accuracy
+    kap_val <- eval_final$kappa
+    cli::cli_alert_info("OA : {round(oa_val * 100, 1)}%  |  Kappa : {round(kap_val, 3)}")
+    cli::cli_text("")
+    cli::cli_text(interpret_oa(oa_val))
+    cli::cli_text(interpret_kappa(kap_val))
   }
   cli::cli_text("")
   cli::cli_text("Mod\u00e8le sauvegard\u00e9 dans : {.path {models_dir}}")
