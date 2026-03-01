@@ -22,22 +22,30 @@
 
 #' Télécharger la carte OSO (CESBIO) pour une AOI
 #'
-#' Télécharge la carte d'occupation du sol OSO depuis Theia/CESBIO.
-#' La carte OSO est produite annuellement à partir de Sentinel-2 à 10 m
-#' et couvre la France métropolitaine.
+#' Télécharge la carte d'occupation du sol OSO depuis Recherche Data Gouv.
+#' La carte OSO est produite annuellement par le CESBIO/CNES à partir de
+#' Sentinel-2 à 10 m et couvre la France métropolitaine.
+#'
+#' Nomenclature OSO (23 classes, depuis 2018) :
+#'   17 = Feuillus, 18 = Conifères
+#'
+#' Stratégie de téléchargement (alignée sur le package nemeton) :
+#'   1. Cache global : le raster France entière (~6 Go) est téléchargé une seule
+#'      fois dans un répertoire partagé (évite la duplication par projet)
+#'   2. Découpe locale : le raster est croppé à l'AOI et sauvegardé par projet
+#'   3. Fallback : recherche de fichier local existant
 #'
 #' @param aoi sf object — zone d'intérêt (sera reprojetée en Lambert-93)
 #' @param year Année OSO (2018–2023 disponibles)
-#' @param output_dir Répertoire de sortie
-#' @return Chemin vers le raster OSO téléchargé (GeoTIFF)
+#' @param output_dir Répertoire de sortie (cache projet)
+#' @return Chemin vers le raster OSO découpé à l'AOI (GeoTIFF, Lambert-93)
 #' @export
 download_oso <- function(aoi, year = FOREST_MASK_PARAMS$oso_year,
                           output_dir = file.path(RAW_DIR, "oso")) {
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
   oso_file <- file.path(output_dir, paste0("oso_", year, ".tif"))
 
-  # Retourner si déjà téléchargé
-
+  # Retourner si déjà découpé pour cette AOI
   if (file.exists(oso_file)) {
     log_msg("  OSO {year} déjà présent : {oso_file}", level = "info")
     return(oso_file)
@@ -45,65 +53,165 @@ download_oso <- function(aoi, year = FOREST_MASK_PARAMS$oso_year,
 
   log_msg("Téléchargement de la carte OSO {year} (CESBIO)...")
 
-  # L'AOI en Lambert-93 pour la requête
+  # L'AOI en Lambert-93
   aoi_proj <- sf::st_transform(aoi, 2154)
-  bbox <- sf::st_bbox(aoi_proj)
 
-  # --- Stratégie 1 : WCS Theia ---
-  # L'API Theia/CNES distribue les cartes OSO via un service WCS
-  oso_wcs_url <- "https://theia.cnes.fr/atdistrib/rocket"
-  wcs_request <- paste0(
-    oso_wcs_url, "#/collections/",
-    "OSO_", year, "/coverage?",
-    "subset=x(", round(bbox["xmin"]), ",", round(bbox["xmax"]), ")",
-    "&subset=y(", round(bbox["ymin"]), ",", round(bbox["ymax"]), ")",
-    "&format=image/tiff"
+  # --- Cache global : raster France entière (partagé entre projets) ---
+  # OSO fait ~6 Go, on ne veut pas le retélécharger pour chaque AOI
+  global_cache <- file.path(
+    rappdirs::user_cache_dir("treesatnemeton"), "oso"
   )
+  dir.create(global_cache, showWarnings = FALSE, recursive = TRUE)
+  oso_global <- file.path(global_cache, "oso.tif")
 
-  # Tentative de téléchargement WCS
-  downloaded <- tryCatch({
-    tmp_file <- tempfile(fileext = ".tif")
-    resp <- httr::GET(wcs_request, httr::write_disk(tmp_file, overwrite = TRUE),
-                       httr::timeout(120))
-    if (httr::status_code(resp) == 200 && file.size(tmp_file) > 1000) {
-      file.copy(tmp_file, oso_file, overwrite = TRUE)
-      unlink(tmp_file)
-      TRUE
-    } else {
-      unlink(tmp_file)
-      FALSE
+  # --- Stratégie 1 : Cache global déjà présent ---
+  if (!file.exists(oso_global)) {
+    # --- Stratégie 2 : Téléchargement depuis Recherche Data Gouv ---
+    # Source : https://entrepot.recherche.data.gouv.fr/dataset.xhtml?persistentId=doi:10.57745/UZ2NJ7
+    oso_url <- "https://entrepot.recherche.data.gouv.fr/api/access/datafile/:persistentId?persistentId=doi:10.57745/8M1AN1"
+
+    # Vérifier si l'archive existe déjà
+    oso_tar <- file.path(global_cache, "OSO_RASTER.tar.gz")
+    oso_tar_files <- list.files(global_cache, pattern = "^OSO_.*\\.tar\\.gz$",
+                                 full.names = TRUE)
+    if (length(oso_tar_files) > 0) oso_tar <- oso_tar_files[1]
+
+    need_download <- TRUE
+    oso_expected_size <- 5e9  # ~5-6 Go
+
+    if (file.exists(oso_tar) && file.info(oso_tar)$size >= oso_expected_size) {
+      log_msg("  Archive OSO existante ({round(file.info(oso_tar)$size/1e9, 1)} Go)",
+              level = "info")
+      need_download <- FALSE
     }
-  }, error = function(e) FALSE)
 
-  # --- Stratégie 2 : fichier local ou déjà présent dans data/ ---
-  if (!downloaded) {
-    # Chercher un fichier OSO déjà présent (toutes les variantes possibles)
+    if (need_download) {
+      log_msg("  Téléchargement OSO depuis Recherche Data Gouv (~6 Go)...")
+      log_msg("  Cache global : {global_cache}", level = "info")
+
+      download_ok <- tryCatch({
+        # Augmenter le timeout pour un gros fichier (1 heure)
+        old_timeout <- getOption("timeout")
+        options(timeout = 3600)
+        on.exit(options(timeout = old_timeout), add = TRUE)
+
+        if (requireNamespace("curl", quietly = TRUE)) {
+          # Téléchargement par chunks avec curl (recommandé pour gros fichiers)
+          h <- curl::new_handle()
+          curl::handle_setopt(h,
+            followlocation = TRUE,
+            timeout = 3600,
+            low_speed_limit = 1000,
+            low_speed_time = 300
+          )
+
+          con <- curl::curl(oso_url, handle = h, open = "rb")
+          on.exit(try(close(con), silent = TRUE), add = TRUE)
+          out <- file(oso_tar, open = "wb")
+          on.exit(try(close(out), silent = TRUE), add = TRUE)
+
+          downloaded <- 0
+          chunk_size <- 1024 * 1024  # 1 Mo
+          last_pct <- -1
+
+          while (TRUE) {
+            buf <- readBin(con, raw(), n = chunk_size)
+            if (length(buf) == 0) break
+            writeBin(buf, out)
+            downloaded <- downloaded + length(buf)
+
+            pct <- min(floor(downloaded / oso_expected_size * 100), 99)
+            if (pct %% 10 == 0 && pct != last_pct) {
+              log_msg("  Téléchargement : {pct}% ({round(downloaded/1e9, 1)} Go)")
+              last_pct <- pct
+            }
+          }
+          close(out)
+          close(con)
+
+          log_msg("  OSO téléchargé : {round(downloaded/1e9, 1)} Go", level = "success")
+          TRUE
+        } else {
+          # Fallback : utils::download.file
+          utils::download.file(oso_url, oso_tar, mode = "wb", quiet = FALSE)
+          TRUE
+        }
+      }, error = function(e) {
+        log_msg("  Échec téléchargement OSO : {e$message}", level = "warning")
+        FALSE
+      })
+
+      if (!download_ok || !file.exists(oso_tar) ||
+          file.info(oso_tar)$size < oso_expected_size) {
+        log_msg("  Téléchargement incomplet ou échoué.", level = "warning")
+        log_msg("  Téléchargez manuellement depuis :", level = "warning")
+        log_msg("  https://entrepot.recherche.data.gouv.fr/dataset.xhtml?persistentId=doi:10.57745/UZ2NJ7",
+                level = "warning")
+        log_msg("  Extrayez oso.tif dans : {global_cache}", level = "warning")
+      }
+    }
+
+    # Extraire l'archive si elle existe
+    if (file.exists(oso_tar) && !file.exists(oso_global)) {
+      log_msg("  Extraction de l'archive OSO...")
+      utils::untar(oso_tar, exdir = global_cache)
+
+      # Chercher le TIF extrait (nommé OCS_*.tif dans l'archive)
+      tif_files <- list.files(global_cache, pattern = "^OCS_.*\\.tif$",
+                               recursive = TRUE, full.names = TRUE)
+      if (length(tif_files) > 0) {
+        file.copy(tif_files[1], oso_global, overwrite = TRUE)
+        log_msg("  OSO extrait : {oso_global}", level = "success")
+
+        # Nettoyage : supprimer les répertoires intermédiaires
+        oso_dirs <- list.dirs(global_cache, full.names = TRUE, recursive = FALSE)
+        oso_dirs <- oso_dirs[grepl("^OSO_", basename(oso_dirs))]
+        if (length(oso_dirs) > 0) unlink(oso_dirs, recursive = TRUE)
+      }
+    }
+  }
+
+  # --- Stratégie 3 : Fichier local existant ---
+  if (!file.exists(oso_global)) {
+    # Chercher un fichier OSO déjà présent localement
+    search_dirs <- unique(c(RAW_DIR, DATA_DIR, output_dir, global_cache))
+    search_dirs <- search_dirs[dir.exists(search_dirs)]
     existing <- list.files(
-      c(RAW_DIR, DATA_DIR, output_dir),
-      pattern = paste0("(OSO|oso).*", year, ".*\\.(tif|TIF)$"),
+      search_dirs,
+      pattern = paste0("(OSO|oso|OCS).*\\.(tif|TIF)$"),
       recursive = TRUE, full.names = TRUE
     )
     if (length(existing) > 0) {
       log_msg("  OSO trouvé localement : {existing[1]}", level = "info")
-      # Découper à l'AOI
-      r <- terra::rast(existing[1])
-      aoi_vect <- terra::vect(aoi_proj)
-      r_crop <- terra::crop(r, aoi_vect)
-      r_mask <- terra::mask(r_crop, aoi_vect)
-      terra::writeRaster(r_mask, oso_file, datatype = "INT1U", overwrite = TRUE)
-      downloaded <- TRUE
+      oso_global <- existing[1]
     }
   }
 
-  if (!downloaded) {
-    log_msg("Impossible de télécharger OSO {year}.", level = "warning")
-    log_msg("Téléchargez manuellement depuis https://theia.cnes.fr", level = "warning")
-    log_msg("et placez le fichier dans {output_dir}/", level = "warning")
+  if (!file.exists(oso_global)) {
+    log_msg("  OSO non disponible. Masque NDVI seul sera utilisé.", level = "warning")
     return(NULL)
   }
 
-  log_msg("  OSO {year} sauvegardé : {oso_file}", level = "success")
-  oso_file
+  # --- Découper à l'AOI (cache projet) ---
+  log_msg("  Découpe OSO à l'AOI...")
+  tryCatch({
+    r <- terra::rast(oso_global)
+    aoi_vect <- terra::vect(aoi_proj)
+
+    # Reprojeter l'AOI dans le CRS de l'OSO si nécessaire
+    if (!terra::same.crs(r, aoi_vect)) {
+      aoi_vect <- terra::project(aoi_vect, terra::crs(r))
+    }
+
+    r_crop <- terra::crop(r, aoi_vect)
+    r_mask <- terra::mask(r_crop, aoi_vect)
+    terra::writeRaster(r_mask, oso_file, datatype = "INT1U", overwrite = TRUE)
+    log_msg("  OSO découpé sauvegardé : {oso_file}", level = "success")
+    return(oso_file)
+  }, error = function(e) {
+    log_msg("  Erreur découpe OSO : {e$message}", level = "warning")
+    return(NULL)
+  })
 }
 
 #' Construire un masque forêt OSO (binaire)

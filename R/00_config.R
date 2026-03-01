@@ -278,20 +278,22 @@ FOREST_MASK_PARAMS <- list(
   # --- OSO (carte d'occupation du sol CESBIO) ---
   use_oso = TRUE,
 
-  # URL Theia / Zenodo pour le téléchargement OSO
+  # Source : Recherche Data Gouv (CESBIO/CNES)
+  # DOI : 10.57745/UZ2NJ7
   # Format : GeoTIFF, 10 m, Lambert-93 (EPSG:2154), France métropolitaine
-  oso_base_url = "https://theia.cnes.fr/atdistrib/rocket",
-  oso_zenodo_base = "https://zenodo.org/records",
+  # Le raster France entière (~6 Go) est téléchargé dans un cache global
+  # et découpé à l'AOI par projet (même logique que le package nemeton).
+  oso_download_url = "https://entrepot.recherche.data.gouv.fr/api/access/datafile/:persistentId?persistentId=doi:10.57745/8M1AN1",
+  oso_manual_url   = "https://entrepot.recherche.data.gouv.fr/dataset.xhtml?persistentId=doi:10.57745/UZ2NJ7",
 
   # Année OSO (doit correspondre à l'année d'analyse)
   oso_year = 2021,
 
   # Classes OSO considérées comme forestières
-  # Nomenclature OSO niveau 2 (2021+) :
-  #   31 = Feuillus, 32 = Conifères, 33 = Forêt mixte
-  # Nomenclature OSO niveau 1 (< 2021) :
-  #   2 = Forêt
-  oso_forest_classes = c(31L, 32L, 33L),
+  # Nomenclature OSO 23 classes (produit CESBIO/CNES depuis 2018) :
+  #   17 = Feuillus (forêts de feuillus)
+  #   18 = Conifères (forêts de conifères)
+  oso_forest_classes = c(17L, 18L),
 
   # Méthode de rééchantillonnage (catégoriel → nearest neighbor)
   oso_resample_method = "near",

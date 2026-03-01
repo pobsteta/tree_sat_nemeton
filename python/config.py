@@ -82,10 +82,12 @@ FOREST_MASK_CONFIG = {
     "apply_forest_mask": True,
 
     # OSO (CESBIO) — carte d'occupation du sol annuelle 10 m
+    # Source : Recherche Data Gouv (doi:10.57745/UZ2NJ7)
     "use_oso": True,
     "oso_year": 2021,
-    # Classes OSO forestières (nomenclature niveau 2, 2021+)
-    "oso_forest_classes": [31, 32, 33],  # Feuillus, Conifères, Mixte
+    # Classes OSO forestières (nomenclature 23 classes, CESBIO/CNES depuis 2018)
+    # 17 = Feuillus, 18 = Conifères
+    "oso_forest_classes": [17, 18],
     "oso_resample_method": "nearest",
 
     # NDVI max annuel

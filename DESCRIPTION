@@ -31,6 +31,7 @@ Imports:
     pracma,
     purrr,
     ranger,
+    rappdirs,
     RColorBrewer,
     readr,
     rstac,
@@ -45,6 +46,7 @@ Imports:
 Suggests:
     Boruta,
     caret,
+    curl,
     data.table,
     hdf5r,
     e1071,
