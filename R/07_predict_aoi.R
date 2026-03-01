@@ -1692,6 +1692,31 @@ predict_species_map <- function(aoi_path,
   readr::write_csv(stats, stats_path)
   log_msg("  Statistiques         : {stats_path}", level = "success")
 
+  # 7i. Rapport cartographique PDF
+  s2_rgb <- tryCatch(
+    build_s2_rgb_composite(cube_list, dates),
+    error = function(e) {
+      log_msg("  Composite RGB : {e$message}", level = "warning")
+      NULL
+    }
+  )
+  pdf_report <- tryCatch(
+    generate_prediction_report_pdf(
+      rasters    = rasters,
+      statistics = stats,
+      output_dir = output_dir,
+      s2_rgb     = s2_rgb,
+      aoi        = aoi
+    ),
+    error = function(e) {
+      log_msg("  Erreur g\u00e9n\u00e9ration rapport PDF : {e$message}", level = "warning")
+      NULL
+    }
+  )
+  if (!is.null(pdf_report)) {
+    output_files$pdf_report <- pdf_report
+  }
+
   # --- 8. Résumé ---
   t_elapsed <- difftime(Sys.time(), t_start, units = "mins")
   cli::cli_h1("Résultat")
@@ -1716,6 +1741,8 @@ predict_species_map <- function(aoi_path,
   cli::cli_li("{stats_path}              — statistiques par espèce")
   if (!is.null(forest_mask_raster))
     cli::cli_li("{file.path(output_dir, 'masque_foret.tif')} — masque forestier (OSO+NDVI)")
+  if (!is.null(output_files$pdf_report))
+    cli::cli_li("{output_files$pdf_report} — rapport cartographique (PDF 7 pages)")
   cli::cli_end()
 
   if (!is.null(output_files$shannon)) {
@@ -1738,7 +1765,8 @@ predict_species_map <- function(aoi_path,
     species_vector    = species_sf,
     statistics        = stats,
     model             = model,
-    legend            = rasters$legend
+    legend            = rasters$legend,
+    pdf_report        = pdf_report
   ))
 }
 
