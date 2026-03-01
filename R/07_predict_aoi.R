@@ -17,6 +17,199 @@
 # Tous les modules chargés via le package
 
 # ==============================================================================
+# 0. MASQUE FORESTIER (OSO + NDVI)
+# ==============================================================================
+
+#' Télécharger la carte OSO (CESBIO) pour une AOI
+#'
+#' Télécharge la carte d'occupation du sol OSO depuis Theia/CESBIO.
+#' La carte OSO est produite annuellement à partir de Sentinel-2 à 10 m
+#' et couvre la France métropolitaine.
+#'
+#' @param aoi sf object — zone d'intérêt (sera reprojetée en Lambert-93)
+#' @param year Année OSO (2018–2023 disponibles)
+#' @param output_dir Répertoire de sortie
+#' @return Chemin vers le raster OSO téléchargé (GeoTIFF)
+#' @export
+download_oso <- function(aoi, year = FOREST_MASK_PARAMS$oso_year,
+                          output_dir = file.path(RAW_DIR, "oso")) {
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+  oso_file <- file.path(output_dir, paste0("oso_", year, ".tif"))
+
+  # Retourner si déjà téléchargé
+
+  if (file.exists(oso_file)) {
+    log_msg("  OSO {year} déjà présent : {oso_file}", level = "info")
+    return(oso_file)
+  }
+
+  log_msg("Téléchargement de la carte OSO {year} (CESBIO)...")
+
+  # L'AOI en Lambert-93 pour la requête
+  aoi_proj <- sf::st_transform(aoi, 2154)
+  bbox <- sf::st_bbox(aoi_proj)
+
+  # --- Stratégie 1 : WCS Theia ---
+  # L'API Theia/CNES distribue les cartes OSO via un service WCS
+  oso_wcs_url <- "https://theia.cnes.fr/atdistrib/rocket"
+  wcs_request <- paste0(
+    oso_wcs_url, "#/collections/",
+    "OSO_", year, "/coverage?",
+    "subset=x(", round(bbox["xmin"]), ",", round(bbox["xmax"]), ")",
+    "&subset=y(", round(bbox["ymin"]), ",", round(bbox["ymax"]), ")",
+    "&format=image/tiff"
+  )
+
+  # Tentative de téléchargement WCS
+  downloaded <- tryCatch({
+    tmp_file <- tempfile(fileext = ".tif")
+    resp <- httr::GET(wcs_request, httr::write_disk(tmp_file, overwrite = TRUE),
+                       httr::timeout(120))
+    if (httr::status_code(resp) == 200 && file.size(tmp_file) > 1000) {
+      file.copy(tmp_file, oso_file, overwrite = TRUE)
+      unlink(tmp_file)
+      TRUE
+    } else {
+      unlink(tmp_file)
+      FALSE
+    }
+  }, error = function(e) FALSE)
+
+  # --- Stratégie 2 : fichier local ou déjà présent dans data/ ---
+  if (!downloaded) {
+    # Chercher un fichier OSO déjà présent (toutes les variantes possibles)
+    existing <- list.files(
+      c(RAW_DIR, DATA_DIR, output_dir),
+      pattern = paste0("(OSO|oso).*", year, ".*\\.(tif|TIF)$"),
+      recursive = TRUE, full.names = TRUE
+    )
+    if (length(existing) > 0) {
+      log_msg("  OSO trouvé localement : {existing[1]}", level = "info")
+      # Découper à l'AOI
+      r <- terra::rast(existing[1])
+      aoi_vect <- terra::vect(aoi_proj)
+      r_crop <- terra::crop(r, aoi_vect)
+      r_mask <- terra::mask(r_crop, aoi_vect)
+      terra::writeRaster(r_mask, oso_file, datatype = "INT1U", overwrite = TRUE)
+      downloaded <- TRUE
+    }
+  }
+
+  if (!downloaded) {
+    log_msg("Impossible de télécharger OSO {year}.", level = "warning")
+    log_msg("Téléchargez manuellement depuis https://theia.cnes.fr", level = "warning")
+    log_msg("et placez le fichier dans {output_dir}/", level = "warning")
+    return(NULL)
+  }
+
+  log_msg("  OSO {year} sauvegardé : {oso_file}", level = "success")
+  oso_file
+}
+
+#' Construire un masque forêt OSO (binaire)
+#'
+#' Convertit la carte OSO en masque binaire forêt (1) / non-forêt (0),
+#' rééchantillonné sur la grille du cube Sentinel-2.
+#'
+#' @param oso_path Chemin vers le raster OSO
+#' @param template SpatRaster — grille cible (même résolution/emprise que le cube S2)
+#' @param forest_classes Codes OSO considérés comme forestiers
+#' @return SpatRaster binaire aligné sur le template (1 = forêt, 0 = non-forêt)
+#' @export
+build_oso_forest_mask <- function(oso_path, template,
+                                   forest_classes = FOREST_MASK_PARAMS$oso_forest_classes) {
+  r_oso <- terra::rast(oso_path)
+
+  # Rééchantillonner sur la grille S2 (nearest neighbor pour catégoriel)
+  r_oso <- terra::resample(r_oso, template, method = "near")
+
+  # Convertir en masque binaire : 1 si dans forest_classes, 0 sinon
+  oso_vals <- terra::values(r_oso)[, 1]
+  mask_vals <- as.integer(oso_vals %in% forest_classes)
+  mask_vals[is.na(oso_vals)] <- 0L
+
+  r_mask <- terra::rast(template)
+  terra::values(r_mask) <- mask_vals
+  names(r_mask) <- "forest_oso"
+  r_mask
+}
+
+#' Construire un masque NDVI (végétation active)
+#'
+#' Identifie les pixels avec un NDVI max annuel supérieur au seuil.
+#' Détecte la végétation active même si la carte OSO est obsolète
+#' (jeune régénération, forêt récente hors carte OSO).
+#'
+#' @param cube_arrays Liste des matrices par bande (n_pixels × n_dates)
+#' @param template SpatRaster — grille cible
+#' @param threshold Seuil NDVI max annuel (défaut 0.4)
+#' @return SpatRaster binaire (1 = NDVI max >= seuil, 0 sinon)
+#' @export
+build_ndvi_mask <- function(cube_arrays, template,
+                             threshold = FOREST_MASK_PARAMS$ndvi_min_threshold) {
+  # Calcul du NDVI pour toutes les dates
+  b08 <- cube_arrays[["B08"]]
+  b04 <- cube_arrays[["B04"]]
+
+  # NDVI = (NIR - Red) / (NIR + Red)
+  ndvi <- (b08 - b04) / (b08 + b04 + 1e-10)
+
+  # NDVI max annuel par pixel (max sur toutes les dates, en ignorant les NA)
+  ndvi_max <- apply(ndvi, 1, function(x) {
+    if (all(is.na(x))) return(NA_real_)
+    max(x, na.rm = TRUE)
+  })
+
+  # Masque binaire : 1 si NDVI max >= seuil
+  mask_vals <- as.integer(!is.na(ndvi_max) & ndvi_max >= threshold)
+
+  r_mask <- terra::rast(template)
+  terra::values(r_mask) <- mask_vals
+  names(r_mask) <- "forest_ndvi"
+  r_mask
+}
+
+#' Construire le masque forestier combiné (OSO + NDVI)
+#'
+#' Combine les deux sources pour créer un masque robuste :
+#' - "union" : pixel forestier si OSO forêt OU NDVI > seuil
+#'   (conserve les coupes rases avec NDVI résiduel et les jeunes plantations)
+#' - "intersection" : pixel forestier si OSO forêt ET NDVI > seuil
+#'   (plus strict, exclut les coupes rases dans les zones OSO « forêt »)
+#'
+#' @param oso_mask SpatRaster binaire OSO (ou NULL si non disponible)
+#' @param ndvi_mask SpatRaster binaire NDVI (ou NULL si non disponible)
+#' @param method "union" ou "intersection"
+#' @return SpatRaster binaire combiné (1 = forêt, 0 = non-forêt, NA = hors zone)
+#' @export
+build_forest_mask <- function(oso_mask = NULL, ndvi_mask = NULL,
+                               method = FOREST_MASK_PARAMS$combine_method) {
+  if (is.null(oso_mask) && is.null(ndvi_mask)) {
+    return(NULL)
+  }
+
+  if (is.null(oso_mask)) return(ndvi_mask)
+  if (is.null(ndvi_mask)) return(oso_mask)
+
+  # Extraire les valeurs
+  oso_vals  <- terra::values(oso_mask)[, 1]
+  ndvi_vals <- terra::values(ndvi_mask)[, 1]
+
+  combined <- if (method == "intersection") {
+    as.integer(oso_vals == 1L & ndvi_vals == 1L)
+  } else {
+    # "union" par défaut
+    as.integer(oso_vals == 1L | ndvi_vals == 1L)
+  }
+
+  r_combined <- terra::rast(oso_mask)
+  terra::values(r_combined) <- combined
+  names(r_combined) <- "forest_mask"
+
+  r_combined
+}
+
+# ==============================================================================
 # 1. TÉLÉCHARGEMENT DES SÉRIES TEMPORELLES SENTINEL-2 SUR L'AOI
 # ==============================================================================
 
@@ -167,9 +360,12 @@ build_s2_cube <- function(s2_dir, aoi, bands = S2_BAND_NAMES,
 #' @param block_size Nombre de lignes par bloc de traitement
 #' @param terrain_rasters Liste optionnelle de chemins raster terrain
 #'   (sortie de compute_terrain_rasters : dem, slope, aspect, twi)
+#' @param forest_mask SpatRaster binaire optionnel (1 = forêt, 0 = non-forêt).
+#'   Si fourni, seuls les pixels forestiers sont traités (gain de temps + précision).
 #' @return Liste avec la matrice de features, indices valides, etc.
 extract_pixel_features <- function(cube_list, dates, block_size = 100,
-                                    terrain_rasters = NULL) {
+                                    terrain_rasters = NULL,
+                                    forest_mask = NULL) {
   log_msg("Extraction des features pixel par pixel...")
 
   n_dates  <- length(cube_list)
@@ -281,6 +477,18 @@ extract_pixel_features <- function(cube_list, dates, block_size = 100,
 
   # Identifier les pixels valides (au moins 3 dates non-NA pour la première bande)
   valid_mask <- rowSums(!is.na(first_band_mat)) >= 3
+  n_data_valid <- sum(valid_mask)
+
+  # --- Appliquer le masque forestier (OSO + NDVI) ---
+  if (!is.null(forest_mask)) {
+    forest_vals <- as.integer(terra::values(forest_mask)[, 1])
+    forest_bool <- !is.na(forest_vals) & forest_vals == 1L
+    n_forest <- sum(forest_bool)
+    n_masked_out <- sum(valid_mask & !forest_bool)
+    valid_mask <- valid_mask & forest_bool
+    log_msg("  Masque forestier : {n_forest} pixels forêt, {n_masked_out} pixels non-forêt exclus")
+  }
+
   valid_idx  <- which(valid_mask)
   n_valid    <- length(valid_idx)
 
@@ -856,10 +1064,87 @@ predict_species_map <- function(aoi_path,
     }
   }
 
+  # --- 3c. Masque forestier (OSO + NDVI) ---
+  forest_mask_raster <- NULL
+  if (isTRUE(FOREST_MASK_PARAMS$apply_forest_mask)) {
+    cli::cli_h2("3c. Masque forestier (OSO + NDVI)")
+
+    template <- cube_list[[1]][[1]]
+    oso_mask <- NULL
+    ndvi_mask <- NULL
+
+    # --- OSO ---
+    if (isTRUE(FOREST_MASK_PARAMS$use_oso)) {
+      oso_path <- tryCatch({
+        download_oso(aoi, year = FOREST_MASK_PARAMS$oso_year)
+      }, error = function(e) {
+        log_msg("Erreur OSO : {e$message}", level = "warning")
+        NULL
+      })
+
+      if (!is.null(oso_path) && file.exists(oso_path)) {
+        oso_mask <- build_oso_forest_mask(oso_path, template)
+        n_oso_forest <- sum(terra::values(oso_mask) == 1L, na.rm = TRUE)
+        n_total <- terra::ncell(oso_mask)
+        log_msg("  OSO : {n_oso_forest}/{n_total} pixels forestiers ({round(n_oso_forest/n_total*100,1)}%)",
+                level = "success")
+      } else {
+        log_msg("  OSO non disponible — masque NDVI seul", level = "warning")
+      }
+    }
+
+    # --- NDVI ---
+    if (isTRUE(FOREST_MASK_PARAMS$use_ndvi)) {
+      log_msg("  Calcul du masque NDVI (seuil = {FOREST_MASK_PARAMS$ndvi_min_threshold})...")
+
+      # Charger les bandes B08 et B04 du cube pour le calcul NDVI
+      bands <- S2_BAND_NAMES
+      n_dates_cube <- length(cube_list)
+      n_pixels_cube <- terra::ncell(template)
+      cube_b08 <- matrix(NA_real_, nrow = n_pixels_cube, ncol = n_dates_cube)
+      cube_b04 <- matrix(NA_real_, nrow = n_pixels_cube, ncol = n_dates_cube)
+      for (d in seq_len(n_dates_cube)) {
+        b08_name <- grep("^B08(_|$)", names(cube_list[[d]]), value = TRUE)
+        b04_name <- grep("^B04(_|$)", names(cube_list[[d]]), value = TRUE)
+        if (length(b08_name) > 0) cube_b08[, d] <- as.numeric(terra::values(cube_list[[d]][[b08_name[1]]]))
+        if (length(b04_name) > 0) cube_b04[, d] <- as.numeric(terra::values(cube_list[[d]][[b04_name[1]]]))
+      }
+
+      # Normaliser si nécessaire (valeurs S2 L2A 0-10000 → 0-1)
+      if (max(cube_b08, na.rm = TRUE) > 2) {
+        cube_b08 <- cube_b08 / S2_SCALE_FACTOR
+        cube_b04 <- cube_b04 / S2_SCALE_FACTOR
+      }
+
+      ndvi_arrays <- list(B08 = cube_b08, B04 = cube_b04)
+      ndvi_mask <- build_ndvi_mask(ndvi_arrays, template)
+      n_ndvi_forest <- sum(terra::values(ndvi_mask) == 1L, na.rm = TRUE)
+      log_msg("  NDVI : {n_ndvi_forest}/{n_pixels_cube} pixels végétation active",
+              level = "success")
+    }
+
+    # --- Combiner ---
+    forest_mask_raster <- build_forest_mask(oso_mask, ndvi_mask)
+    if (!is.null(forest_mask_raster)) {
+      n_forest <- sum(terra::values(forest_mask_raster) == 1L, na.rm = TRUE)
+      n_total <- terra::ncell(forest_mask_raster)
+      log_msg("  Masque combiné ({FOREST_MASK_PARAMS$combine_method}) : {n_forest}/{n_total} pixels forestiers ({round(n_forest/n_total*100,1)}%)",
+              level = "success")
+
+      # Sauvegarder le masque pour inspection
+      mask_path <- file.path(output_dir, "masque_foret.tif")
+      dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+      if (file.exists(mask_path)) file.remove(mask_path)
+      terra::writeRaster(forest_mask_raster, mask_path, datatype = "INT1U")
+      log_msg("  Masque sauvegardé : {mask_path}", level = "info")
+    }
+  }
+
   # --- 4. Extraction des features ---
   cli::cli_h2("4. Extraction des features pixellaires")
   pixel_features <- extract_pixel_features(cube_list, dates,
-                                            terrain_rasters = terrain_rasters)
+                                            terrain_rasters = terrain_rasters,
+                                            forest_mask = forest_mask_raster)
 
   if (is.null(pixel_features)) {
     cli::cli_alert_danger("Échec de l'extraction des features")
@@ -1008,6 +1293,8 @@ predict_species_map <- function(aoi_path,
     cli::cli_li("{output_files$presence} — présence par essence (binaire, multi-bandes)")
   cli::cli_li("{output_files$vector}     — polygones par espèce (GeoPackage)")
   cli::cli_li("{stats_path}              — statistiques par espèce")
+  if (!is.null(forest_mask_raster))
+    cli::cli_li("{file.path(output_dir, 'masque_foret.tif')} — masque forestier (OSO+NDVI)")
   cli::cli_end()
 
   if (!is.null(output_files$shannon)) {
@@ -1026,6 +1313,7 @@ predict_species_map <- function(aoi_path,
     probas_raster     = rasters$probas,
     shannon_raster    = rasters$shannon,
     presence_raster   = rasters$presence,
+    forest_mask       = forest_mask_raster,
     species_vector    = species_sf,
     statistics        = stats,
     model             = model,

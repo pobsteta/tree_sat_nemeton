@@ -75,3 +75,23 @@ TRAIN_CONFIG = {
     "val_ratio": 0.15,
     "seed": 42,
 }
+
+# --- Masque forestier (OSO + NDVI) -------------------------------------------
+# Paramètres pour restreindre la prédiction aux zones boisées
+FOREST_MASK_CONFIG = {
+    "apply_forest_mask": True,
+
+    # OSO (CESBIO) — carte d'occupation du sol annuelle 10 m
+    "use_oso": True,
+    "oso_year": 2021,
+    # Classes OSO forestières (nomenclature niveau 2, 2021+)
+    "oso_forest_classes": [31, 32, 33],  # Feuillus, Conifères, Mixte
+    "oso_resample_method": "nearest",
+
+    # NDVI max annuel
+    "use_ndvi": True,
+    "ndvi_min_threshold": 0.4,
+
+    # Combinaison : "union" (OU) ou "intersection" (ET)
+    "combine_method": "union",
+}

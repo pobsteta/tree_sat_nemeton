@@ -262,6 +262,59 @@ DEM_PARAMS <- list(
   twi_max = 20
 )
 
+# --- Masque forestier (OSO + NDVI) --------------------------------------------
+# Masque combiné pour restreindre la classification aux zones boisées.
+# Deux sources complémentaires :
+#   1. OSO (CESBIO) : carte d'occupation du sol annuelle à 10 m (Sentinel-2)
+#      Classes forestières : 31 = Forêt de feuillus, 32 = Forêt de conifères,
+#                            33 = Forêt mixte (nomenclature OSO 2021+)
+#   2. NDVI max annuel : seuil sur le maximum NDVI de la série temporelle
+#      Détecte les coupes rases récentes (non encore visibles dans OSO)
+
+FOREST_MASK_PARAMS <- list(
+  # Activer le masque forestier combiné
+  apply_forest_mask = TRUE,
+
+  # --- OSO (carte d'occupation du sol CESBIO) ---
+  use_oso = TRUE,
+
+  # URL Theia / Zenodo pour le téléchargement OSO
+  # Format : GeoTIFF, 10 m, Lambert-93 (EPSG:2154), France métropolitaine
+  oso_base_url = "https://theia.cnes.fr/atdistrib/rocket",
+  oso_zenodo_base = "https://zenodo.org/records",
+
+  # Année OSO (doit correspondre à l'année d'analyse)
+  oso_year = 2021,
+
+  # Classes OSO considérées comme forestières
+  # Nomenclature OSO niveau 2 (2021+) :
+  #   31 = Feuillus, 32 = Conifères, 33 = Forêt mixte
+  # Nomenclature OSO niveau 1 (< 2021) :
+  #   2 = Forêt
+  oso_forest_classes = c(31L, 32L, 33L),
+
+  # Méthode de rééchantillonnage (catégoriel → nearest neighbor)
+  oso_resample_method = "near",
+
+  # --- NDVI max annuel ---
+  use_ndvi = TRUE,
+
+  # Seuil NDVI max : un pixel est considéré comme « végétation active » si
+
+  # son NDVI max annuel dépasse ce seuil. Les zones en dessous (sol nu, urbain,
+  # eau, coupes très récentes) sont exclues de la prédiction d'essence.
+  # Valeur recommandée : 0.3–0.4
+  ndvi_min_threshold = 0.4,
+
+  # --- Combinaison des masques ---
+  # "union"        : pixel boisé si OSO forêt OU NDVI > seuil
+  #                  (conserve les coupes rases absentes d'OSO mais avec NDVI résiduel,
+  #                   et les forêts récentes pas encore dans OSO)
+  # "intersection" : pixel boisé si OSO forêt ET NDVI > seuil
+  #                  (plus strict, exclut les coupes rases même si OSO dit forêt)
+  combine_method = "union"
+)
+
 # --- Paramètres de visualisation ---------------------------------------------
 VIS_PARAMS <- list(
   dpi        = 300,
