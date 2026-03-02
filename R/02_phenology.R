@@ -105,8 +105,10 @@ extract_phenometrics <- function(ndvi_ts, dates) {
   total_integral <- pracma::trapz(doy, ndvi_ts)
 
   # Intégrale de la saison de croissance (entre SOS et EOS)
-  if (!is.na(season$SOS) && !is.na(season$EOS)) {
+  if (!is.na(season$SOS) && !is.na(season$EOS) &&
+      is.finite(season$SOS) && is.finite(season$EOS)) {
     growing_mask <- doy >= season$SOS & doy <= season$EOS
+    growing_mask[is.na(growing_mask)] <- FALSE
     if (sum(growing_mask) > 1) {
       growing_integral <- pracma::trapz(doy[growing_mask], ndvi_ts[growing_mask])
     } else {
@@ -118,6 +120,7 @@ extract_phenometrics <- function(ndvi_ts, dates) {
 
   # 4. Taux de verdissement (greening rate) — pente du NDVI au printemps
   spring_mask <- doy >= 60 & doy <= 180  # Mars à Juin
+  spring_mask[is.na(spring_mask)] <- FALSE
   if (sum(spring_mask) > 2) {
     spring_fit <- lm(ndvi_ts[spring_mask] ~ doy[spring_mask])
     greening_rate <- coef(spring_fit)[2]
@@ -127,6 +130,7 @@ extract_phenometrics <- function(ndvi_ts, dates) {
 
   # 5. Taux de sénescence (browning rate) — pente du NDVI en automne
   autumn_mask <- doy >= 240 & doy <= 340  # Sept à Déc
+  autumn_mask[is.na(autumn_mask)] <- FALSE
   if (sum(autumn_mask) > 2) {
     autumn_fit <- lm(ndvi_ts[autumn_mask] ~ doy[autumn_mask])
     browning_rate <- coef(autumn_fit)[2]
@@ -135,10 +139,10 @@ extract_phenometrics <- function(ndvi_ts, dates) {
   }
 
   # 6. NDVI par saison (moyenne saisonnière)
-  winter_mask <- doy <= 80 | doy >= 335    # Déc-Mars
-  spring2_mask <- doy > 80 & doy <= 172    # Mars-Juin
-  summer_mask <- doy > 172 & doy <= 264    # Juin-Sept
-  autumn2_mask <- doy > 264 & doy < 335    # Sept-Déc
+  winter_mask  <- (doy <= 80 | doy >= 335);  winter_mask[is.na(winter_mask)]   <- FALSE
+  spring2_mask <- (doy > 80 & doy <= 172);  spring2_mask[is.na(spring2_mask)] <- FALSE
+  summer_mask  <- (doy > 172 & doy <= 264); summer_mask[is.na(summer_mask)]   <- FALSE
+  autumn2_mask <- (doy > 264 & doy < 335);  autumn2_mask[is.na(autumn2_mask)] <- FALSE
 
   ndvi_winter <- mean(ndvi_ts[winter_mask], na.rm = TRUE)
   ndvi_spring <- mean(ndvi_ts[spring2_mask], na.rm = TRUE)
@@ -153,7 +157,10 @@ extract_phenometrics <- function(ndvi_ts, dates) {
 
   # 9. Asymétrie du cycle phénologique
   # Durée du verdissement vs durée de la sénescence
-  if (!is.na(season$SOS) && !is.na(season$EOS) && !is.na(season$max_date)) {
+  sos_ok <- !is.na(season$SOS) && is.finite(season$SOS)
+  eos_ok <- !is.na(season$EOS) && is.finite(season$EOS)
+  max_ok <- !is.na(season$max_date) && is.finite(season$max_date)
+  if (sos_ok && eos_ok && max_ok) {
     green_up_duration   <- season$max_date - season$SOS
     senescence_duration <- season$EOS - season$max_date
     asymmetry <- if (senescence_duration > 0) green_up_duration / senescence_duration else NA_real_
