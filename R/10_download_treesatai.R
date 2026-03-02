@@ -1040,11 +1040,30 @@ load_treesatai_data <- function(data_path) {
 
   # Filtrer sur les patch_ids demandés
   if (!is.null(patch_ids)) {
-    # Matcher : le GeoJSON peut avoir des noms sans .tif
-    centroids_match <- centroids$patch_id %in% patch_ids |
-      paste0(centroids$patch_id, ".tif") %in% patch_ids |
-      tools::file_path_sans_ext(centroids$patch_id) %in%
-        tools::file_path_sans_ext(patch_ids)
+    # Diagnostic : afficher les formats des deux côtés
+    log_msg("  Exemples patch_id GeoJSON : {paste(head(centroids$patch_id, 3), collapse = ', ')}")
+    log_msg("  Exemples patch_id labels  : {paste(head(patch_ids, 3), collapse = ', ')}")
+
+    # Normaliser pour matching flexible
+    # Labels : "Genus_species_age_ID_dataset_source.tif"
+    # GeoJSON : peut être avec/sans extension, avec/sans chemin
+    centroids_norm <- tools::file_path_sans_ext(basename(centroids$patch_id))
+    patches_norm   <- tools::file_path_sans_ext(basename(patch_ids))
+
+    centroids_match <- centroids_norm %in% patches_norm |
+      centroids$patch_id %in% patch_ids
+
+    if (sum(centroids_match) == 0) {
+      # Tentative : les GeoJSON ont parfois un identifiant numérique pur
+      # que l'on retrouve dans le patch_name des labels (champ ID)
+      # Format labels : Genus_species_ageclass_ID_dataset_source.tif
+      # Essayer de matcher l'ID numérique dans le nom du patch
+      log_msg("  Matching direct échoué, tentative par sous-chaîne...", level = "info")
+      centroids_match <- sapply(centroids_norm, function(cid) {
+        any(grepl(cid, patches_norm, fixed = TRUE))
+      })
+    }
+
     centroids <- centroids[centroids_match, ]
   }
 
