@@ -1776,8 +1776,9 @@ predict_species_map <- function(aoi_path,
       NULL
     }
   )
-  pdf_report <- tryCatch(
-    generate_prediction_report_pdf(
+  # 7j. Rapport cartographique (dashboard mono-page : RStudio + PDF)
+  report <- tryCatch(
+    generate_prediction_report(
       rasters     = rasters,
       statistics  = stats,
       output_dir  = output_dir,
@@ -1786,34 +1787,13 @@ predict_species_map <- function(aoi_path,
       forest_mask = forest_mask_raster
     ),
     error = function(e) {
-      log_msg("  Erreur g\u00e9n\u00e9ration rapport PDF : {e$message}", level = "warning")
+      log_msg("  Erreur rapport cartographique : {e$message}", level = "warning")
       NULL
     }
   )
-  if (!is.null(pdf_report)) {
-    output_files$pdf_report <- pdf_report
-  }
-
-  # 7j. Rapport cartographique RStudio (ggplot2 + patchwork)
-  rstudio_report <- tryCatch(
-    generate_prediction_report_rstudio(
-      rasters     = rasters,
-      statistics  = stats,
-      output_dir  = output_dir,
-      s2_rgb      = s2_rgb,
-      aoi         = aoi,
-      forest_mask = forest_mask_raster
-    ),
-    error = function(e) {
-      log_msg("  Erreur rapport RStudio : {e$message}", level = "warning")
-      NULL
-    }
-  )
-  if (!is.null(rstudio_report)) {
-    output_files$dashboard <- rstudio_report$dashboard
-    if (!is.null(rstudio_report$pdf_path)) {
-      output_files$pdf_rstudio <- rstudio_report$pdf_path
-    }
+  if (!is.null(report)) {
+    output_files$dashboard  <- report$dashboard
+    output_files$pdf_report <- report$pdf_path
   }
 
   # --- 8. Résumé ---

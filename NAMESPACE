@@ -54,6 +54,7 @@ export(plot_boruta_importance)
 export(plot_species_metrics)
 export(plot_dashboard)
 export(build_s2_rgb_composite)
+export(generate_prediction_report)
 export(generate_prediction_report_pdf)
 export(generate_prediction_report_rstudio)
 

@@ -711,371 +711,38 @@ build_s2_rgb_composite <- function(cube_list, dates = NULL) {
   colors
 }
 
+# NOTE : generate_prediction_report_pdf() a été fusionné dans
+# generate_prediction_report() (dashboard patchwork unique).
+# Conserver ce commentaire pour traçabilité.
+
+# [SUPPRIMÉ] — Ancien rapport multi-pages base R (terra::plot)
+# Remplacé par generate_prediction_report() ci-dessous (ggplot2 + patchwork).
+# L'ancien code utilisait grDevices::pdf() et produisait 8 pages séparées.
+# Le nouveau produit un dashboard mono-page affiché dans RStudio + sauvé en PDF.
+
+.LEGACY_REPORT_REMOVED <- TRUE  # marqueur pour ne pas casser les recherches
+
+
 #' G\u00e9n\u00e9ration d'un rapport cartographique PDF multi-pages
 #'
-#' Produit un PDF A4 paysage contenant :
-#' \itemize{
-#'   \item Carte des essences foresti\u00e8res (fond satellite optionnel,
-#'         coupes/vides transparents)
-#'   \item Entropie de Shannon (diversit\u00e9 / taux de m\u00e9lange)
-#'   \item Carte de confiance du mod\u00e8le
-#'   \item Carte feuillus / r\u00e9sineux
-#'   \item Richesse sp\u00e9cifique (nombre d'essences par pixel)
-#'   \item Composition foresti\u00e8re (diagramme en barres)
-#'   \item Confiance moyenne par essence
-#' }
+#' @description
+#' OBSOLÈTE — redirige vers \code{generate_prediction_report()}.
+#' Conservée uniquement pour rétrocompatibilité.
 #'
-#' @param rasters Liste issue de build_species_raster() :
-#'   species, confidence, shannon, probas, presence, legend
-#' @param statistics data.frame issu de compute_map_statistics()
-#' @param output_dir R\u00e9pertoire de sortie
-#' @param s2_rgb SpatRaster 3 bandes (R, G, B) pour le fond satellite (NULL = pas de fond)
-#' @param aoi sf object \u2014 contour de la zone d'int\u00e9r\u00eat (NULL = pas de contour)
-#' @param forest_mask SpatRaster binaire du masque forestier (NULL = pas de carte masque)
-#' @return Chemin vers le fichier PDF (invisible)
+#' @inheritParams generate_prediction_report
 #' @export
 generate_prediction_report_pdf <- function(rasters, statistics, output_dir,
                                             s2_rgb = NULL, aoi = NULL,
                                             forest_mask = NULL) {
-  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
-  pdf_path <- file.path(output_dir, "rapport_cartographique.pdf")
-  log_msg("G\u00e9n\u00e9ration du rapport cartographique PDF...")
-
-  # --- M\u00e9tadonn\u00e9es ---
-  legend_df <- rasters$legend
-  class_names <- legend_df$species
-  n_classes <- length(class_names)
-  species_colors <- .match_species_colors(class_names)
-
-  # Identifier Coupe/Vide / Cleared
-  cleared_idx <- which(class_names %in% c("Coupe/Vide", "Cleared"))
-
-  # Raster d'essences : Coupe/Vide \u2192 NA (transparent)
-  r_species_clean <- rasters$species
-  if (length(cleared_idx) > 0) {
-    rcl_na <- cbind(cleared_idx, rep(NA_real_, length(cleared_idx)))
-    r_species_clean <- terra::classify(r_species_clean, rcl_na)
-  }
-  # Supprimer les niveaux cat\u00e9goriels pour un trac\u00e9 num\u00e9rique propre
-  if (!is.null(terra::levels(r_species_clean)[[1]])) {
-    levels(r_species_clean) <- NULL
-  }
-
-  # Couleurs/noms pour les classes pr\u00e9sentes dans le raster
-  present_vals <- sort(unique(terra::values(r_species_clean)))
-  present_vals <- present_vals[!is.na(present_vals)]
-  plot_colors <- species_colors[present_vals]
-  plot_names  <- class_names[present_vals]
-
-  # Projeter l'AOI
-  aoi_proj <- NULL
-  if (!is.null(aoi)) {
-    aoi_proj <- sf::st_transform(aoi, terra::crs(rasters$species))
-  }
-
-  # --- Ouvrir le PDF (A4 paysage) ---
-  grDevices::pdf(pdf_path, width = 11.69, height = 8.27,
-                  title = "TreeSatAI Nemeton \u2014 Rapport cartographique")
-  on.exit(grDevices::dev.off(), add = TRUE)
-
-  # ================================================================
-  # PAGE 1 : Carte des essences foresti\u00e8res
-  # ================================================================
-  tryCatch({
-    if (!is.null(s2_rgb)) {
-      # Fond satellite Sentinel-2 True Color
-      terra::plotRGB(s2_rgb, stretch = "lin",
-                      mar = c(3.5, 2, 3.5, 9),
-                      axes = TRUE,
-                      main = "Carte des essences foresti\u00e8res")
-      terra::plot(r_species_clean, type = "classes",
-                  col = plot_colors,
-                  alpha = 0.7,
-                  legend = FALSE, axes = FALSE,
-                  add = TRUE)
-    } else {
-      par(mar = c(3.5, 2, 3.5, 9))
-      terra::plot(r_species_clean, type = "classes",
-                  col = plot_colors,
-                  main = "Carte des essences foresti\u00e8res",
-                  legend = FALSE, axes = TRUE)
-    }
-    if (!is.null(aoi_proj)) {
-      plot(sf::st_geometry(aoi_proj), add = TRUE,
-           border = "white", lwd = 2, lty = 2)
-    }
-    # L\u00e9gende manuelle
-    par(xpd = TRUE)
-    legend("right", inset = c(-0.13, 0),
-           legend = plot_names, fill = plot_colors,
-           cex = 0.6, bty = "n",
-           title = "Essences", title.font = 2, border = NA)
-    par(xpd = FALSE)
-    bg_label <- if (!is.null(s2_rgb)) "Fond : Sentinel-2 True Color" else ""
-    mtext(paste0(bg_label, " | Coupes/Vides = transparents"),
-          side = 1, line = 2.2, cex = 0.7, adj = 1, font = 3)
-  }, error = function(e) {
-    plot.new()
-    text(0.5, 0.5, paste("Erreur carte essences :", e$message), cex = 0.8)
-  })
-
-  # ================================================================
-  # PAGE 2 : Entropie de Shannon
-  # ================================================================
-  if (!is.null(rasters$shannon)) {
-    tryCatch({
-      par(mar = c(3.5, 2, 3.5, 6))
-      terra::plot(rasters$shannon,
-                  col = viridis::viridis(100),
-                  main = "Entropie de Shannon \u2014 Taux de m\u00e9lange des essences",
-                  axes = TRUE,
-                  plg = list(title = "Shannon\n(0\u20131)",
-                             title.cex = 0.8, cex = 0.7))
-      if (!is.null(aoi_proj)) {
-        plot(sf::st_geometry(aoi_proj), add = TRUE,
-             border = "white", lwd = 2, lty = 2)
-      }
-      mtext(paste0("0 = peuplement pur (100% une essence) | ",
-                    "1 = m\u00e9lange maximal (toutes essences \u00e9quiprobables)"),
-            side = 1, line = 2.2, cex = 0.7, font = 3)
-    }, error = function(e) {
-      plot.new()
-      text(0.5, 0.5, paste("Erreur carte Shannon :", e$message), cex = 0.8)
-    })
-  }
-
-  # ================================================================
-  # PAGE 3 : Carte de confiance
-  # ================================================================
-  tryCatch({
-    par(mar = c(3.5, 2, 3.5, 6))
-    conf_pal <- grDevices::colorRampPalette(
-      c("#d73027", "#fc8d59", "#fee08b", "#d9ef8b", "#91cf60", "#1a9850")
-    )(100)
-    terra::plot(rasters$confidence,
-                col = conf_pal,
-                main = "Carte de confiance \u2014 Probabilit\u00e9 de l'essence pr\u00e9dite",
-                axes = TRUE,
-                range = c(0, 1),
-                plg = list(title = "Probabilit\u00e9",
-                           title.cex = 0.8, cex = 0.7))
-    if (!is.null(aoi_proj)) {
-      plot(sf::st_geometry(aoi_proj), add = TRUE,
-           border = "black", lwd = 2, lty = 2)
-    }
-    mtext(paste0("Rouge = faible confiance (zones de m\u00e9lange/confusion) | ",
-                  "Vert = forte confiance (peuplement monosp\u00e9cifique)"),
-          side = 1, line = 2.2, cex = 0.65, font = 3)
-  }, error = function(e) {
-    plot.new()
-    text(0.5, 0.5, paste("Erreur carte confiance :", e$message), cex = 0.8)
-  })
-
-  # ================================================================
-  # PAGE 4 : Feuillus / R\u00e9sineux
-  # ================================================================
-  tryCatch({
-    type_info <- data.frame(species = class_names,
-                             code = seq_along(class_names),
-                             stringsAsFactors = FALSE)
-    type_source <- if (all(class_names %in% SPECIES_GROUPS_INFO$group)) {
-      SPECIES_GROUPS_INFO[, c("group", "type")]
-    } else {
-      data.frame(group = SPECIES$french, type = SPECIES$type,
-                 stringsAsFactors = FALSE)
-    }
-    type_info <- merge(type_info, type_source,
-                        by.x = "species", by.y = "group", all.x = TRUE)
-    type_info$type_code <- ifelse(type_info$type == "feuillu", 1L,
-                            ifelse(type_info$type == "r\u00e9sineux", 2L,
-                                   NA_integer_))
-    rcl_type <- as.matrix(type_info[order(type_info$code),
-                                     c("code", "type_code")])
-    r_type <- rasters$species
-    if (!is.null(terra::levels(r_type)[[1]])) levels(r_type) <- NULL
-    r_type <- terra::classify(r_type, rcl_type)
-
-    type_cols <- c("#66c2a5", "#1b7837")
-    par(mar = c(3.5, 2, 3.5, 8))
-    terra::plot(r_type, type = "classes",
-                col = type_cols,
-                main = "Types forestiers \u2014 Feuillus / R\u00e9sineux",
-                legend = FALSE, axes = TRUE)
-    if (!is.null(aoi_proj)) {
-      plot(sf::st_geometry(aoi_proj), add = TRUE,
-           border = "black", lwd = 2, lty = 2)
-    }
-    par(xpd = TRUE)
-    legend("right", inset = c(-0.08, 0),
-           legend = c("Feuillus", "R\u00e9sineux"), fill = type_cols,
-           cex = 0.8, bty = "n", title = "Type", title.font = 2)
-    par(xpd = FALSE)
-    type_stats <- aggregate(surface_ha ~ type, data = statistics, sum, na.rm = TRUE)
-    type_stats <- type_stats[type_stats$type %in% c("feuillu", "r\u00e9sineux"), ]
-    if (nrow(type_stats) > 0) {
-      txt <- paste(
-        ifelse(type_stats$type == "feuillu", "Feuillus", "R\u00e9sineux"),
-        ":", type_stats$surface_ha, "ha", collapse = "  |  ")
-      mtext(txt, side = 1, line = 2.2, cex = 0.8)
-    }
-  }, error = function(e) {
-    plot.new()
-    text(0.5, 0.5, paste("Erreur carte types :", e$message), cex = 0.8)
-  })
-
-  # ================================================================
-  # PAGE 5 : Masque forestier (OSO + NDVI)
-  # ================================================================
-  if (!is.null(forest_mask)) {
-    tryCatch({
-      par(mar = c(3.5, 2, 3.5, 8))
-      mask_cols <- c("#f7f7f7", "#1a9850")
-      terra::plot(forest_mask, type = "classes",
-                  col = mask_cols,
-                  main = "Masque forestier (OSO + NDVI)",
-                  legend = FALSE, axes = TRUE)
-      if (!is.null(aoi_proj)) {
-        plot(sf::st_geometry(aoi_proj), add = TRUE,
-             border = "black", lwd = 2, lty = 2)
-      }
-      par(xpd = TRUE)
-      legend("right", inset = c(-0.08, 0),
-             legend = c("Non-for\u00eat", "For\u00eat"),
-             fill = mask_cols,
-             cex = 0.8, bty = "n", title = "Masque", title.font = 2)
-      par(xpd = FALSE)
-      n_forest <- sum(terra::values(forest_mask) == 1L, na.rm = TRUE)
-      n_total  <- sum(!is.na(terra::values(forest_mask)))
-      pct_forest <- round(n_forest / n_total * 100, 1)
-      res_m <- terra::res(forest_mask)[1]
-      ha_forest <- round(n_forest * res_m^2 / 10000, 1)
-      mtext(paste0("For\u00eat : ", n_forest, " pixels (",
-                    pct_forest, "%, ", ha_forest, " ha) | ",
-                    "Combinaison : ", FOREST_MASK_PARAMS$combine_method),
-            side = 1, line = 2.2, cex = 0.7, font = 3)
-    }, error = function(e) {
-      plot.new()
-      text(0.5, 0.5, paste("Erreur carte masque :", e$message), cex = 0.8)
-    })
-  }
-
-  # ================================================================
-  # PAGE 6 : Richesse sp\u00e9cifique (nombre d'essences par pixel)
-  # ================================================================
-  if (!is.null(rasters$presence)) {
-    tryCatch({
-      r_richness <- terra::app(rasters$presence, sum, na.rm = TRUE)
-      names(r_richness) <- "richesse_specifique"
-      max_rich <- max(terra::values(r_richness), na.rm = TRUE)
-
-      par(mar = c(3.5, 2, 3.5, 6))
-      terra::plot(r_richness,
-                  col = viridis::magma(max(max_rich, 2)),
-                  main = "Richesse sp\u00e9cifique \u2014 Nombre d'essences d\u00e9tect\u00e9es par pixel",
-                  axes = TRUE,
-                  plg = list(title = "Nb essences",
-                             title.cex = 0.8, cex = 0.7))
-      if (!is.null(aoi_proj)) {
-        plot(sf::st_geometry(aoi_proj), add = TRUE,
-             border = "white", lwd = 2, lty = 2)
-      }
-      threshold <- CLASSIF_PARAMS$presence_threshold
-      if (is.null(threshold)) threshold <- 0.10
-      mtext(paste0("Seuil de pr\u00e9sence : probabilit\u00e9 \u2265 ",
-                    threshold * 100, "%"),
-            side = 1, line = 2.2, cex = 0.7, font = 3)
-    }, error = function(e) {
-      plot.new()
-      text(0.5, 0.5, paste("Erreur carte richesse :", e$message), cex = 0.8)
-    })
-  }
-
-  # ================================================================
-  # PAGE 7 : Composition foresti\u00e8re (ggplot2)
-  # ================================================================
-  tryCatch({
-    detected <- statistics[statistics$n_pixels > 0, ]
-    detected_sp <- detected[!detected$espece %in% c("Coupe/Vide", "Cleared"), ]
-    if (nrow(detected_sp) > 0) {
-      p <- ggplot(detected_sp,
-                   aes(x = reorder(espece, surface_ha),
-                       y = surface_ha, fill = espece)) +
-        geom_col(alpha = 0.85, show.legend = FALSE) +
-        geom_text(aes(label = paste0(pct, "% \u2014 ", surface_ha, " ha")),
-                  hjust = -0.05, size = 3) +
-        coord_flip(clip = "off") +
-        scale_fill_manual(values = species_colors) +
-        scale_y_continuous(expand = expansion(mult = c(0, 0.35))) +
-        labs(
-          title = "Composition foresti\u00e8re \u2014 Surface par essence",
-          subtitle = paste0("Surface totale class\u00e9e : ",
-                            sum(detected_sp$surface_ha), " ha (",
-                            nrow(detected_sp), " essences d\u00e9tect\u00e9es)"),
-          x = NULL, y = "Surface (ha)"
-        ) +
-        theme_minimal(base_size = 11) +
-        theme(
-          plot.title = element_text(face = "bold", size = 14),
-          plot.subtitle = element_text(size = 10, color = "grey40"),
-          axis.text.y = element_text(face = "italic", size = 9),
-          panel.grid.major.y = element_blank()
-        )
-      print(p)
-    }
-  }, error = function(e) {
-    plot.new()
-    text(0.5, 0.5, paste("Erreur statistiques :", e$message), cex = 0.8)
-  })
-
-  # ================================================================
-  # PAGE 8 : Confiance moyenne par essence (ggplot2)
-  # ================================================================
-  tryCatch({
-    detected <- statistics[statistics$n_pixels > 0, ]
-    detected_sp <- detected[!detected$espece %in% c("Coupe/Vide", "Cleared"), ]
-    if (nrow(detected_sp) > 0 && "confiance_moy" %in% names(detected_sp)) {
-      p2 <- ggplot(detected_sp,
-                    aes(x = reorder(espece, confiance_moy),
-                        y = confiance_moy, fill = espece)) +
-        geom_col(alpha = 0.85, show.legend = FALSE) +
-        geom_text(aes(label = paste0(confiance_moy, "%")),
-                  hjust = -0.1, size = 3.5) +
-        geom_hline(yintercept = 70, linetype = "dashed",
-                   color = "grey50", alpha = 0.7) +
-        annotate("text", x = 0.8, y = 72, label = "Seuil 70%",
-                 hjust = 0, size = 2.5, color = "grey50",
-                 fontface = "italic") +
-        coord_flip(clip = "off") +
-        scale_fill_manual(values = species_colors) +
-        scale_y_continuous(limits = c(0, 105),
-                           expand = expansion(mult = c(0, 0.05))) +
-        labs(
-          title = "Confiance moyenne de classification par essence",
-          subtitle = paste0("Probabilit\u00e9 moyenne attribu\u00e9e par le mod\u00e8le ",
-                            "aux pixels de chaque essence"),
-          x = NULL, y = "Confiance moyenne (%)"
-        ) +
-        theme_minimal(base_size = 11) +
-        theme(
-          plot.title = element_text(face = "bold", size = 14),
-          plot.subtitle = element_text(size = 10, color = "grey40"),
-          axis.text.y = element_text(face = "italic", size = 9),
-          panel.grid.major.y = element_blank()
-        )
-      print(p2)
-    }
-  }, error = function(e) {
-    plot.new()
-    text(0.5, 0.5, paste("Erreur confiance :", e$message), cex = 0.8)
-  })
-
-  # Fermeture explicite (on.exit aussi en place comme filet de s\u00e9curit\u00e9)
-  grDevices::dev.off()
-  on.exit(NULL)  # annuler on.exit apr\u00e8s fermeture r\u00e9ussie
-
-  log_msg("Rapport PDF : {pdf_path}", level = "success")
-  invisible(pdf_path)
+  log_msg("generate_prediction_report_pdf() est obsolète, utilisation de generate_prediction_report()",
+          level = "warning")
+  generate_prediction_report(
+    rasters = rasters, statistics = statistics, output_dir = output_dir,
+    s2_rgb = s2_rgb, aoi = aoi, forest_mask = forest_mask
+  )
 }
+
+
 
 # --- Helpers internes pour les cartes ggplot2 ---------------------------------
 
@@ -1135,23 +802,30 @@ generate_prediction_report_pdf <- function(rasters, statistics, output_dir,
     )
 }
 
-# --- Rapport cartographique RStudio (ggplot2 + patchwork) ---------------------
+# --- Rapport cartographique (ggplot2 + patchwork) -----------------------------
 
-#' G\u00e9n\u00e9ration d'un rapport cartographique ggplot2/patchwork
+#' G\u00e9n\u00e9ration du rapport cartographique (dashboard mono-page)
 #'
-#' Produit un objet patchwork affich\u00e9 dans le plot pane RStudio ET
-#' sauvegard\u00e9 en PDF. Toutes les cartes utilisent geom_raster (pas de
+#' Produit un dashboard patchwork affich\u00e9 dans le plot pane RStudio ET
+#' sauvegard\u00e9 en PDF (\code{rapport_cartographique.pdf}).
+#' Toutes les cartes utilisent geom_raster (pas de
 #' d\u00e9pendance \u00e0 terra::plot) : compatible RStudio, Quarto, Shiny.
 #'
-#' @inheritParams generate_prediction_report_pdf
+#' @param rasters Liste issue de build_species_raster() :
+#'   species, confidence, shannon, probas, presence, legend
+#' @param statistics data.frame issu de compute_map_statistics()
+#' @param output_dir R\u00e9pertoire de sortie
+#' @param s2_rgb SpatRaster 3 bandes (R, G, B) pour le fond satellite (NULL = pas de fond)
+#' @param aoi sf object \u2014 contour de la zone d'int\u00e9r\u00eat (NULL = pas de contour)
+#' @param forest_mask SpatRaster binaire du masque forestier (NULL = pas de carte masque)
 #' @return Liste avec \code{dashboard} (objet patchwork), \code{pdf_path}
 #'   (chemin PDF) et \code{plots} (liste individuelle)
 #' @export
-generate_prediction_report_rstudio <- function(rasters, statistics, output_dir,
-                                                s2_rgb = NULL, aoi = NULL,
-                                                forest_mask = NULL) {
+generate_prediction_report <- function(rasters, statistics, output_dir,
+                                        s2_rgb = NULL, aoi = NULL,
+                                        forest_mask = NULL) {
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
-  log_msg("G\u00e9n\u00e9ration du rapport cartographique RStudio (ggplot2 + patchwork)...")
+  log_msg("G\u00e9n\u00e9ration du rapport cartographique (ggplot2 + patchwork)...")
 
   # --- M\u00e9tadonn\u00e9es ---
   legend_df <- rasters$legend
@@ -1541,7 +1215,7 @@ generate_prediction_report_rstudio <- function(rasters, statistics, output_dir,
   log_msg("Rapport cartographique affich\u00e9 dans le viewer RStudio", level = "success")
 
   # --- Sauvegarde PDF ---
-  pdf_path <- file.path(output_dir, "rapport_cartographique_rstudio.pdf")
+  pdf_path <- file.path(output_dir, "rapport_cartographique.pdf")
   ggsave(pdf_path, dashboard,
          width = 42, height = 55, units = "cm",
          dpi = VIS_PARAMS$dpi, limitsize = FALSE)
@@ -1549,4 +1223,8 @@ generate_prediction_report_rstudio <- function(rasters, statistics, output_dir,
 
   invisible(list(dashboard = dashboard, pdf_path = pdf_path, plots = plots))
 }
+
+#' @rdname generate_prediction_report
+#' @export
+generate_prediction_report_rstudio <- generate_prediction_report
 
