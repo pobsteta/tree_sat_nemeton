@@ -1040,31 +1040,38 @@ load_treesatai_data <- function(data_path) {
 
   # Filtrer sur les patch_ids demandés
   if (!is.null(patch_ids)) {
-    # Diagnostic : afficher les formats des deux côtés
-    log_msg("  Exemples patch_id GeoJSON : {paste(head(centroids$patch_id, 3), collapse = ', ')}")
-    log_msg("  Exemples patch_id labels  : {paste(head(patch_ids, 3), collapse = ', ')}")
-
-    # Normaliser pour matching flexible
-    # Labels : "Genus_species_age_ID_dataset_source.tif"
-    # GeoJSON : peut être avec/sans extension, avec/sans chemin
-    centroids_norm <- tools::file_path_sans_ext(basename(centroids$patch_id))
+    # Format labels : "Genus_species_ageclass_ID_dataset_source.tif"
+    # Format GeoJSON : ID numérique (colonne ID du p.GeoJSON)
+    centroids_norm <- trimws(as.character(centroids$patch_id))
     patches_norm   <- tools::file_path_sans_ext(basename(patch_ids))
 
+    # 1. Matching direct (nom complet ou sans extension)
     centroids_match <- centroids_norm %in% patches_norm |
-      centroids$patch_id %in% patch_ids
+      centroids_norm %in% patch_ids
 
     if (sum(centroids_match) == 0) {
-      # Tentative : les GeoJSON ont parfois un identifiant numérique pur
-      # que l'on retrouve dans le patch_name des labels (champ ID)
-      # Format labels : Genus_species_ageclass_ID_dataset_source.tif
-      # Essayer de matcher l'ID numérique dans le nom du patch
-      log_msg("  Matching direct échoué, tentative par sous-chaîne...", level = "info")
-      centroids_match <- sapply(centroids_norm, function(cid) {
-        any(grepl(cid, patches_norm, fixed = TRUE))
+      # 2. Extraire le champ ID (4e champ) des noms de labels
+      # "Abies_alba_0_2545_WEFL_NLF" → "2545"
+      label_ids <- sapply(strsplit(patches_norm, "_"), function(parts) {
+        if (length(parts) >= 4) parts[4] else NA_character_
       })
-    }
+      # Construire table de correspondance : numeric_id → label_patch_id
+      id_to_label <- stats::setNames(patch_ids, label_ids)
+      id_to_label <- id_to_label[!is.na(names(id_to_label))]
 
-    centroids <- centroids[centroids_match, ]
+      centroids_match <- centroids_norm %in% names(id_to_label)
+      n_matched <- sum(centroids_match)
+      log_msg("  Matching par champ ID : {n_matched}/{length(centroids_norm)} centroïdes")
+
+      # Remapper les patch_id du GeoJSON vers ceux des labels
+      # pour que la jointure en aval fonctionne
+      centroids <- centroids[centroids_match, ]
+      centroids$patch_id <- as.character(
+        id_to_label[as.character(centroids$patch_id)]
+      )
+    } else {
+      centroids <- centroids[centroids_match, ]
+    }
   }
 
   if (nrow(centroids) == 0) {
