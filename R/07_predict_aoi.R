@@ -1810,7 +1810,10 @@ predict_species_map <- function(aoi_path,
     }
   )
   if (!is.null(rstudio_report)) {
-    output_files$pdf_rstudio <- rstudio_report$pdf_path
+    output_files$dashboard <- rstudio_report$dashboard
+    if (!is.null(rstudio_report$pdf_path)) {
+      output_files$pdf_rstudio <- rstudio_report$pdf_path
+    }
   }
 
   # --- 8. Résumé ---

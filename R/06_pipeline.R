@@ -334,25 +334,25 @@ train_treesatai <- function(data_path     = NULL,
     eval_results <- if (!is.null(rf_eval)) rf_eval else cnn_eval
 
     n_classes <- length(eval_class_names)
-    plot_confusion_matrix(
+    print(plot_confusion_matrix(
       eval_results$confusion_matrix,
       class_names = eval_class_names,
       title = glue::glue("Matrice de confusion \u2014 {n_classes} classes"),
       save_path = file.path(figures_dir, "04_confusion_matrix.png")
-    )
+    ))
 
     if (!is.null(rf_importance)) {
       # Top 30 variables (vue synth\u00e9tique)
-      plot_variable_importance(
+      print(plot_variable_importance(
         rf_importance,
         top_n = 30,
         save_path = file.path(figures_dir, "05_variable_importance.png")
-      )
+      ))
       # TOUTES les variables (vue compl\u00e8te)
-      plot_variable_importance_all(
+      print(plot_variable_importance_all(
         rf_importance,
         save_path = file.path(figures_dir, "05b_variable_importance_all.png")
-      )
+      ))
     }
 
     # Importance Boruta (si disponible)
@@ -360,17 +360,17 @@ train_treesatai <- function(data_path     = NULL,
       boruta_imp_path <- file.path(output_dir, "boruta_importance.csv")
       if (file.exists(boruta_imp_path)) {
         boruta_imp_df <- readr::read_csv(boruta_imp_path, show_col_types = FALSE)
-        plot_boruta_importance(
+        print(plot_boruta_importance(
           boruta_imp_df,
           save_path = file.path(figures_dir, "05c_boruta_importance.png")
-        )
+        ))
       }
     }
 
-    plot_species_metrics(
+    print(plot_species_metrics(
       eval_results$per_class,
       save_path = file.path(figures_dir, "06_species_metrics.png")
-    )
+    ))
 
     plot_spectral_heatmap(
       feature_matrix,

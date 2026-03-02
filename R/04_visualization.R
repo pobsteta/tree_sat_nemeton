@@ -1139,19 +1139,22 @@ generate_prediction_report_pdf <- function(rasters, statistics, output_dir,
 
 #' G\u00e9n\u00e9ration d'un rapport cartographique ggplot2/patchwork
 #'
-#' Produit un objet patchwork affichable dans le viewer RStudio et
-#' sauvegard\u00e9 en PDF. Toutes les cartes utilisent geom_raster (pas de
+#' Produit un objet patchwork affichable dans le viewer RStudio.
+#' Toutes les cartes utilisent geom_raster (pas de
 #' d\u00e9pendance \u00e0 terra::plot) : compatible RStudio, Quarto, Shiny.
+#' Le PDF est sauvegard\u00e9 en option (par d\u00e9faut d\u00e9sactiv\u00e9).
 #'
 #' @inheritParams generate_prediction_report_pdf
-#' @return Liste avec \code{dashboard} (objet patchwork) et \code{pdf_path}
-#'   (chemin PDF, invisible)
+#' @param save_pdf Logique. Si TRUE, sauvegarde aussi en PDF dans output_dir.
+#'   Par d\u00e9faut FALSE (affichage RStudio uniquement).
+#' @return Liste avec \code{dashboard} (objet patchwork), \code{plots} (liste
+#'   individuelle) et optionnellement \code{pdf_path}
 #' @export
 generate_prediction_report_rstudio <- function(rasters, statistics, output_dir,
                                                 s2_rgb = NULL, aoi = NULL,
-                                                forest_mask = NULL) {
+                                                forest_mask = NULL,
+                                                save_pdf = FALSE) {
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
-  pdf_path <- file.path(output_dir, "rapport_cartographique_rstudio.pdf")
   log_msg("G\u00e9n\u00e9ration du rapport cartographique RStudio (ggplot2 + patchwork)...")
 
   # --- M\u00e9tadonn\u00e9es ---
@@ -1537,11 +1540,20 @@ generate_prediction_report_rstudio <- function(rasters, statistics, output_dir,
       )
     )
 
-  # Sauvegarder en PDF
-  ggsave(pdf_path, dashboard,
-         width = 42, height = 55, units = "cm",
-         dpi = VIS_PARAMS$dpi, limitsize = FALSE)
-  log_msg("Rapport RStudio PDF : {pdf_path}", level = "success")
+  # --- Afficher dans le plot pane RStudio ---
+  # print() envoie le patchwork au device graphique actif (plot pane RStudio)
+  print(dashboard)
+  log_msg("Rapport cartographique affich\u00e9 dans le viewer RStudio", level = "success")
+
+  # --- Sauvegarde PDF optionnelle ---
+  pdf_path <- NULL
+  if (isTRUE(save_pdf)) {
+    pdf_path <- file.path(output_dir, "rapport_cartographique_rstudio.pdf")
+    ggsave(pdf_path, dashboard,
+           width = 42, height = 55, units = "cm",
+           dpi = VIS_PARAMS$dpi, limitsize = FALSE)
+    log_msg("Rapport PDF sauvegard\u00e9 : {pdf_path}", level = "success")
+  }
 
   invisible(list(dashboard = dashboard, pdf_path = pdf_path, plots = plots))
 }
