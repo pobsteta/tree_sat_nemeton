@@ -924,12 +924,27 @@ load_treesatai_data <- function(data_path) {
     return(NULL)
   }
 
-  # Chercher tous les fichiers GeoJSON
-  gj_files <- list.files(geojson_dir, pattern = "\\.(geojson|json)$",
-                          recursive = TRUE, full.names = TRUE)
+  # Chercher tous les fichiers GeoJSON (extension insensible à la casse)
+  all_files <- list.files(geojson_dir, recursive = TRUE, full.names = TRUE)
+  gj_files <- all_files[grepl("\\.(geojson|json)$", all_files, ignore.case = TRUE)]
   if (length(gj_files) == 0) {
     log_msg("Aucun fichier GeoJSON trouvé dans {geojson_dir}", level = "warning")
     return(NULL)
+  }
+
+  # Privilégier p.GeoJSON (points/centroïdes) plutôt que bb_* (bounding boxes)
+  # Structure TreeSatAI : p.GeoJSON = points, bb_60m.GeoJSON = bbox 60m, bb_200m.GeoJSON = bbox 200m
+  point_files <- gj_files[grepl("^p\\.", basename(gj_files), ignore.case = TRUE)]
+  if (length(point_files) > 0) {
+    gj_files <- point_files
+    log_msg("Utilisation de {basename(gj_files[1])} (centroïdes)")
+  } else {
+    # Fallback : bbox 60m (taille native des patches)
+    bb60_files <- gj_files[grepl("bb_60m", basename(gj_files), ignore.case = TRUE)]
+    if (length(bb60_files) > 0) {
+      gj_files <- bb60_files
+      log_msg("Utilisation de {basename(gj_files[1])} (bounding boxes 60m)")
+    }
   }
 
   log_msg("Chargement de {length(gj_files)} fichier(s) GeoJSON...")
@@ -952,17 +967,26 @@ load_treesatai_data <- function(data_path) {
   patches <- do.call(rbind, all_geom)
 
   # Identifier la colonne de nom de patch
-  # Le GeoJSON peut contenir : name, id, patch_id, filename, etc.
+  # TreeSatAI GeoJSON : "name", "id", "patch_id", "filename", etc.
   name_col <- intersect(
-    c("name", "id", "patch_id", "filename", "patch_name", "Name", "ID"),
-    names(patches)
+    tolower(names(patches)),
+    c("name", "id", "patch_id", "filename", "patch_name")
   )
-
   if (length(name_col) > 0) {
-    patches$patch_id <- as.character(patches[[name_col[1]]])
+    # Retrouver le nom original (la casse réelle)
+    orig_col <- names(patches)[tolower(names(patches)) == name_col[1]]
+    name_col <- orig_col[1]
+  } else {
+    name_col <- NULL
+  }
+
+  if (!is.null(name_col)) {
+    patches$patch_id <- as.character(patches[[name_col]])
+    log_msg("  Colonne d'identification : {name_col}")
   } else {
     # Fallback : utiliser le row name ou un index
-    log_msg("  Pas de colonne d'identification, utilisation de l'index", level = "warning")
+    log_msg("  Colonnes disponibles : {paste(names(patches), collapse = ', ')}", level = "info")
+    log_msg("  Pas de colonne d'identification standard, utilisation de l'index", level = "warning")
     patches$patch_id <- paste0("patch_", seq_len(nrow(patches)))
   }
 
