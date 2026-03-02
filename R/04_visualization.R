@@ -356,7 +356,8 @@ plot_variable_importance_all <- function(importance_df,
 
   if (!is.null(save_path)) {
     # Hauteur adaptative selon le nombre de variables
-    h <- max(20, n_vars * 0.35)
+    # Plafonner à 400 cm pour ne pas dépasser la limite ragg (50000 px à 300 dpi)
+    h <- min(400, max(20, n_vars * 0.35))
     ggsave(save_path, p, width = VIS_PARAMS$width_cm, height = h,
            units = "cm", dpi = VIS_PARAMS$dpi, limitsize = FALSE)
     log_msg("Importance (toutes variables) sauvegard\u00e9e : {save_path}", level = "success")
@@ -436,7 +437,9 @@ plot_boruta_importance <- function(boruta_importance_df,
     )
 
   if (!is.null(save_path)) {
-    h <- max(20, n_total * 0.35)
+    # Plafonner la hauteur pour ne pas dépasser la limite ragg (50000 px)
+    # À 300 dpi : 50000 px ÷ (300/2.54) ≈ 423 cm → on plafonne à 400 cm
+    h <- min(400, max(20, n_total * 0.35))
     ggsave(save_path, p, width = VIS_PARAMS$width_cm, height = h,
            units = "cm", dpi = VIS_PARAMS$dpi, limitsize = FALSE)
     log_msg("Importance Boruta sauvegard\u00e9e : {save_path}", level = "success")
