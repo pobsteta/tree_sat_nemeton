@@ -81,6 +81,17 @@ extract_phenometrics <- function(ndvi_ts, dates) {
   doy <- as.numeric(format(dates, "%j"))
   n <- length(ndvi_ts)
 
+  # Retirer les NA de façon synchrone (trapz exige des vecteurs sans NA)
+  valid <- !is.na(ndvi_ts) & !is.na(doy)
+  dates   <- dates[valid]
+  doy     <- doy[valid]
+  ndvi_ts <- ndvi_ts[valid]
+  n <- length(ndvi_ts)
+
+  if (n < 3) {
+    return(setNames(rep(NA_real_, 28), paste0("pheno_", 1:28)))
+  }
+
   # 1. Saisonnalité basique
   season <- detect_season(ndvi_ts, dates, threshold = 0.5)
 
