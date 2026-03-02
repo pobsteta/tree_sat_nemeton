@@ -10,6 +10,7 @@
 #      — pondération des classes déséquilibrées
 #      — sélection de features par Boruta
 #      — support multi-année (features moyennées sur N ans)
+#      — features terrain réelles (DEM Copernicus 30m) si geojson dispo
 #   4. Produit une carte des essences sur votre AOI
 #
 # Modes d'utilisation :
@@ -72,6 +73,12 @@ if (!USE_SYNTHETIC) {
     components = c("labels", "split", "geojson")
   )
 
+  # Le composant "geojson" fournit les coordonnées des 50k patches.
+  # Au chargement, load_treesatai_data() téléchargera automatiquement
+  # le DEM Copernicus 30m sur l'emprise (Basse-Saxe) et calculera
+  # les features terrain réelles (altitude, pente, exposition, TWI, TPI).
+  # Le résultat est mis en cache dans data/treesatai/terrain_patches.csv.
+
   cat("\nDonnées TreeSatAI prêtes.\n\n")
 } else {
   cat("\n")
@@ -108,6 +115,7 @@ if (file.exists(old_model)) {
 #   - La pondération des classes déséquilibrées
 #   - La sélection de features par Boruta (si use_boruta = TRUE)
 #   - La construction multi-année (si years est un vecteur > 1 an)
+#   - L'extraction terrain réel (Copernicus DEM 30m → altitude, pente, TWI, TPI)
 #   - L'entraînement, l'évaluation et les visualisations
 if (USE_SYNTHETIC) {
   result_train <- train_treesatai(
