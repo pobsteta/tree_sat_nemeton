@@ -662,6 +662,28 @@ load_treesatai_data <- function(data_path) {
     ts_long <- .generate_ts_from_labels(dominant)
   }
 
+  # --- 5. Features terrain réelles (DEM Copernicus 30m) ---
+  # Extraire les valeurs d'altitude, pente, exposition, TWI, TPI
+  # aux centroïdes des patches depuis le GeoJSON + Copernicus DEM
+  if (isTRUE(CLASSIF_PARAMS$use_terrain)) {
+    terrain_df <- tryCatch(
+      .extract_terrain_for_patches(data_path, patch_ids = dominant$patch_id),
+      error = function(e) {
+        log_msg("Extraction terrain impossible : {e$message}", level = "warning")
+        NULL
+      }
+    )
+
+    if (!is.null(terrain_df) && nrow(terrain_df) > 0) {
+      ts_long <- .inject_terrain_in_ts(ts_long, terrain_df)
+    } else {
+      cli::cli_alert_warning(
+        "Terrain réel non disponible (pas de geojson/ ?). ",
+        "Téléchargez le composant geojson : download_treesatai_hf(components = 'geojson')"
+      )
+    }
+  }
+
   list(
     ts_long      = ts_long,
     split        = split_info,
@@ -881,3 +903,261 @@ load_treesatai_data <- function(data_path) {
 }
 
 # %||% est défini dans 08_download_satellite.R
+
+
+# ==============================================================================
+# Extraction terrain réel pour les patches TreeSatAI
+# ==============================================================================
+
+#' Charger les centroïdes des patches depuis le GeoJSON TreeSatAI
+#'
+#' Cherche les fichiers GeoJSON dans le sous-dossier geojson/ du dataset,
+#' extrait les centroïdes de chaque patch et les associe aux patch_id.
+#'
+#' @param data_path Chemin racine du dataset TreeSatAI
+#' @return sf POINT avec colonne patch_id, ou NULL si non trouvé
+#' @keywords internal
+.load_patch_centroids <- function(data_path) {
+  geojson_dir <- file.path(data_path, "geojson")
+  if (!dir.exists(geojson_dir)) {
+    log_msg("Pas de dossier geojson/ dans {data_path}", level = "warning")
+    return(NULL)
+  }
+
+  # Chercher tous les fichiers GeoJSON
+  gj_files <- list.files(geojson_dir, pattern = "\\.(geojson|json)$",
+                          recursive = TRUE, full.names = TRUE)
+  if (length(gj_files) == 0) {
+    log_msg("Aucun fichier GeoJSON trouvé dans {geojson_dir}", level = "warning")
+    return(NULL)
+  }
+
+  log_msg("Chargement de {length(gj_files)} fichier(s) GeoJSON...")
+
+  # Lire et combiner tous les GeoJSON
+  all_geom <- list()
+  for (gj in gj_files) {
+    tryCatch({
+      sf_data <- sf::st_read(gj, quiet = TRUE)
+      if (nrow(sf_data) > 0) {
+        all_geom[[length(all_geom) + 1]] <- sf_data
+      }
+    }, error = function(e) {
+      log_msg("  Erreur lecture {basename(gj)} : {e$message}", level = "warning")
+    })
+  }
+
+  if (length(all_geom) == 0) return(NULL)
+
+  patches <- do.call(rbind, all_geom)
+
+  # Identifier la colonne de nom de patch
+  # Le GeoJSON peut contenir : name, id, patch_id, filename, etc.
+  name_col <- intersect(
+    c("name", "id", "patch_id", "filename", "patch_name", "Name", "ID"),
+    names(patches)
+  )
+
+  if (length(name_col) > 0) {
+    patches$patch_id <- as.character(patches[[name_col[1]]])
+  } else {
+    # Fallback : utiliser le row name ou un index
+    log_msg("  Pas de colonne d'identification, utilisation de l'index", level = "warning")
+    patches$patch_id <- paste0("patch_", seq_len(nrow(patches)))
+  }
+
+  # Extraire les centroïdes (si polygones → centroïde, si déjà points → garder)
+  geom_type <- unique(sf::st_geometry_type(patches))
+  if (any(grepl("POLYGON|MULTI", geom_type))) {
+    centroids <- sf::st_centroid(patches)
+  } else {
+    centroids <- patches
+  }
+
+  # Ne garder que patch_id + geometry
+  centroids <- centroids[, "patch_id"]
+  log_msg("{nrow(centroids)} centroïdes de patches chargés", level = "success")
+  centroids
+}
+
+
+#' Extraire les features terrain réelles pour les patches TreeSatAI
+#'
+#' Chaîne complète : GeoJSON → DEM Copernicus 30m → dérivés terrain →
+#' extraction aux centroïdes. Le résultat est mis en cache dans
+#' \code{terrain_patches.csv} pour éviter de recalculer.
+#'
+#' @param data_path Chemin racine du dataset TreeSatAI
+#' @param patch_ids Vecteur des patch_id à traiter (filtre optionnel)
+#' @return data.frame avec colonnes patch_id, DEM_elevation, DEM_slope,
+#'   DEM_aspect_sin, DEM_aspect_cos, DEM_TWI, DEM_TPI, ou NULL si échec
+#' @keywords internal
+.extract_terrain_for_patches <- function(data_path, patch_ids = NULL) {
+
+  # --- 1. Cache : si déjà calculé, charger directement ---
+  cache_path <- file.path(data_path, "terrain_patches.csv")
+  if (file.exists(cache_path)) {
+    log_msg("Cache terrain trouvé : {cache_path}")
+    terrain_df <- utils::read.csv(cache_path, stringsAsFactors = FALSE)
+    if (!is.null(patch_ids)) {
+      terrain_df <- terrain_df[terrain_df$patch_id %in% patch_ids, ]
+    }
+    log_msg("{nrow(terrain_df)} patches avec terrain (cache)", level = "success")
+    return(terrain_df)
+  }
+
+  # --- 2. Charger les centroïdes depuis le GeoJSON ---
+  centroids <- .load_patch_centroids(data_path)
+  if (is.null(centroids) || nrow(centroids) == 0) {
+    log_msg("Impossible de charger les centroïdes → terrain simulé sera utilisé",
+            level = "warning")
+    return(NULL)
+  }
+
+  # Filtrer sur les patch_ids demandés
+  if (!is.null(patch_ids)) {
+    # Matcher : le GeoJSON peut avoir des noms sans .tif
+    centroids_match <- centroids$patch_id %in% patch_ids |
+      paste0(centroids$patch_id, ".tif") %in% patch_ids |
+      tools::file_path_sans_ext(centroids$patch_id) %in%
+        tools::file_path_sans_ext(patch_ids)
+    centroids <- centroids[centroids_match, ]
+  }
+
+  if (nrow(centroids) == 0) {
+    log_msg("Aucun centroïde ne matche les patches demandés", level = "warning")
+    return(NULL)
+  }
+
+  cli::cli_alert_info("{nrow(centroids)} centroïdes à traiter")
+
+  # --- 3. Télécharger le DEM Copernicus 30m sur l'emprise ---
+  dem_dir <- file.path(data_path, "dem")
+  dir.create(dem_dir, showWarnings = FALSE, recursive = TRUE)
+
+  # Construire l'AOI = bbox des centroïdes avec buffer
+  aoi <- sf::st_as_sfc(sf::st_bbox(centroids))
+  aoi <- sf::st_sf(geometry = aoi, crs = sf::st_crs(centroids))
+  # Buffer de ~2 km pour couvrir les patches en bordure
+  aoi <- sf::st_buffer(aoi, 2000)
+
+  dem_path <- tryCatch(
+    download_dem_copernicus(aoi, output_dir = dem_dir),
+    error = function(e) {
+      log_msg("Échec téléchargement DEM Copernicus : {e$message}", level = "danger")
+      NULL
+    }
+  )
+
+  if (is.null(dem_path) || !file.exists(dem_path)) {
+    log_msg("DEM non disponible → terrain simulé sera utilisé", level = "warning")
+    return(NULL)
+  }
+
+  # --- 4. Calculer les dérivés terrain ---
+  terrain_rasters <- tryCatch(
+    compute_terrain_rasters(dem_path, output_dir = dem_dir),
+    error = function(e) {
+      log_msg("Échec calcul dérivés terrain : {e$message}", level = "danger")
+      NULL
+    }
+  )
+
+  if (is.null(terrain_rasters)) return(NULL)
+
+  # --- 5. Extraire les valeurs aux centroïdes ---
+  log_msg("Extraction terrain aux {nrow(centroids)} centroïdes...")
+  terrain_df <- tryCatch(
+    extract_terrain_at_points(centroids, terrain_rasters),
+    error = function(e) {
+      log_msg("Échec extraction terrain : {e$message}", level = "danger")
+      NULL
+    }
+  )
+
+  if (is.null(terrain_df)) return(NULL)
+
+  # Ajouter les patch_id
+  terrain_df$patch_id <- centroids$patch_id
+
+  # Réordonner les colonnes
+  terrain_df <- terrain_df[, c("patch_id", "DEM_elevation", "DEM_slope",
+                                "DEM_aspect_sin", "DEM_aspect_cos",
+                                "DEM_TWI", "DEM_TPI")]
+
+  # Remplacer les NA par 0 (patches en bordure du DEM)
+  terrain_cols <- c("DEM_elevation", "DEM_slope", "DEM_aspect_sin",
+                     "DEM_aspect_cos", "DEM_TWI", "DEM_TPI")
+  for (col in terrain_cols) {
+    terrain_df[[col]][is.na(terrain_df[[col]])] <- 0
+  }
+
+  # --- 6. Sauvegarder en cache ---
+  utils::write.csv(terrain_df, cache_path, row.names = FALSE)
+  log_msg("Cache terrain sauvegardé : {cache_path} ({nrow(terrain_df)} patches)",
+          level = "success")
+
+  terrain_df
+}
+
+
+#' Injecter les features terrain dans ts_long
+#'
+#' Joint les colonnes DEM_* aux séries temporelles via plot_id = patch_id.
+#' Chaque patch a les mêmes valeurs terrain pour toutes ses dates.
+#'
+#' @param ts_long data.frame de séries temporelles (plot_id, date, bandes...)
+#' @param terrain_df data.frame issu de .extract_terrain_for_patches()
+#' @return ts_long enrichi avec les colonnes DEM_*
+#' @keywords internal
+.inject_terrain_in_ts <- function(ts_long, terrain_df) {
+  if (is.null(terrain_df) || nrow(terrain_df) == 0) return(ts_long)
+
+  terrain_cols <- c("DEM_elevation", "DEM_slope", "DEM_aspect_sin",
+                     "DEM_aspect_cos", "DEM_TWI", "DEM_TPI")
+
+  # Matcher les patch_id (le ts_long utilise plot_id)
+  # Les noms peuvent différer (.tif vs sans extension)
+  ts_ids <- unique(ts_long$plot_id)
+  terr_ids <- terrain_df$patch_id
+
+  # Essayer le match direct
+  matched <- ts_ids %in% terr_ids
+  if (sum(matched) == 0) {
+    # Essayer sans extension .tif
+    terr_ids_notif <- tools::file_path_sans_ext(terr_ids)
+    ts_ids_notif   <- tools::file_path_sans_ext(ts_ids)
+    if (any(ts_ids_notif %in% terr_ids_notif)) {
+      # Normaliser les deux côtés
+      terrain_df$patch_id <- tools::file_path_sans_ext(terrain_df$patch_id)
+      ts_long$plot_id_match <- tools::file_path_sans_ext(ts_long$plot_id)
+      terrain_df_match <- terrain_df
+      names(terrain_df_match)[names(terrain_df_match) == "patch_id"] <- "plot_id_match"
+      ts_long <- merge(ts_long, terrain_df_match, by = "plot_id_match", all.x = TRUE)
+      ts_long$plot_id_match <- NULL
+    } else {
+      log_msg("Aucun match entre plot_id et patch_id terrain", level = "warning")
+      return(ts_long)
+    }
+  } else {
+    # Match direct
+    terrain_df_match <- terrain_df
+    names(terrain_df_match)[names(terrain_df_match) == "patch_id"] <- "plot_id"
+    ts_long <- merge(ts_long, terrain_df_match, by = "plot_id", all.x = TRUE)
+  }
+
+  # Remplacer les NA restants par 0
+  for (col in terrain_cols) {
+    if (col %in% names(ts_long)) {
+      ts_long[[col]][is.na(ts_long[[col]])] <- 0
+    }
+  }
+
+  n_with <- sum(!is.na(ts_long$DEM_elevation) & ts_long$DEM_elevation != 0)
+  n_total <- nrow(ts_long)
+  pct <- round(100 * n_with / n_total, 1)
+  log_msg("Terrain injecté : {pct}% des observations avec données réelles",
+          level = "success")
+
+  ts_long
+}
