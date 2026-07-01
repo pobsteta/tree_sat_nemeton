@@ -1,6 +1,6 @@
 Package: treesatnemeton
 Title: TreeSatAI-Time-Series - Forest Species Classification from Sentinel-2
-Version: 0.1.0
+Version: 0.2.0
 Authors@R:
     person("Pascal", "Obstetar", role = c("aut", "cre"),
            email = "pascal.obstetar@gmail.com")
@@ -11,7 +11,7 @@ Description: Classification of 10 European forest species groups (20 species
     selection and class weighting, automatic satellite data download from
     Microsoft Planetary Computer, and spatial prediction on any area of
     interest (AOI).
-License: MIT + file LICENSE
+License: GPL-3
 URL: https://github.com/pobsteta/tree_sat_nemeton
 BugReports: https://github.com/pobsteta/tree_sat_nemeton/issues
 Encoding: UTF-8
